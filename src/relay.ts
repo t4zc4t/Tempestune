@@ -58,33 +58,38 @@ export async function searchSoundCloud(query: string, limit = 10): Promise<Relay
 const keyOf = (url: string) => url.replace(/^https?:\/\//, '').replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
 const busy = new Map<string, Promise<string>>();
 
+const EXTS = ['m4a', 'mp3', 'opus', 'webm', 'ogg', 'flac'];
+const cached = (key: string) => EXTS.map((e) => `${key}.${e}`).find((f) => existsSync(cache + f));
+
 // returns a url lavalink can play, downloading the track first if it isn't cached
 export function relay(url: string): Promise<string> {
   const key = keyOf(url);
-  const file = `${cache}${key}.m4a`;
-  const local = `http://127.0.0.1:${config.relayPort}/${key}.m4a`;
-  if (existsSync(file)) {
+  const local = (f: string) => `http://127.0.0.1:${config.relayPort}/${f}`;
+  const have = cached(key);
+  if (have) {
     const now = new Date();
-    utimesSync(file, now, now); // keeps it fresh for the cleanup
-    return Promise.resolve(local);
+    utimesSync(cache + have, now, now); // keeps it fresh for the cleanup
+    return Promise.resolve(local(have));
   }
   const going = busy.get(key);
   if (going) return going;
+  // ffmpeg only repairs the container (soundcloud sends fragmented mp4), the audio is never re-encoded
   const job = run(
     [
       '-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio',
-      '-x', '--audio-format', 'm4a',
       '--ffmpeg-location', ffmpeg,
-      '--no-playlist', '--no-progress', '--no-warnings',
+      '--no-playlist', '--no-progress', '--no-warnings', '--no-part',
+      '-P', `temp:${cache}tmp`,
       '-o', `${cache}${key}.%(ext)s`,
       url,
     ],
     5 * 60_000,
   )
     .then(() => {
-      if (!existsSync(file)) throw new Error('download finished but no file was written');
+      const f = cached(key);
+      if (!f) throw new Error('download finished but no file was written');
       trim();
-      return local;
+      return local(f);
     })
     .finally(() => busy.delete(key));
   busy.set(key, job);
@@ -94,7 +99,7 @@ export function relay(url: string): Promise<string> {
 // oldest files go first once the cache is over its size
 function trim() {
   const files = readdirSync(cache)
-    .filter((f) => f.endsWith('.m4a'))
+    .filter((f) => EXTS.some((e) => f.endsWith(`.${e}`)))
     .map((f) => ({ f, s: statSync(cache + f) }))
     .sort((a, b) => a.s.mtimeMs - b.s.mtimeMs);
   let total = files.reduce((n, x) => n + x.s.size, 0);
@@ -111,24 +116,25 @@ function trim() {
 export function startRelay() {
   const server = createServer((req, res) => {
     const name = decodeURIComponent((req.url ?? '/').slice(1));
-    if (!/^[a-z0-9_]+\.m4a$/i.test(name) || !existsSync(cache + name)) {
+    if (!/^[a-z0-9_]+\.(m4a|mp3|opus|webm|ogg|flac)$/i.test(name) || !existsSync(cache + name)) {
       res.writeHead(404).end();
       return;
     }
     const size = statSync(cache + name).size;
+    const type = name.endsWith('.mp3') ? 'audio/mpeg' : name.endsWith('.m4a') ? 'audio/mp4' : 'application/octet-stream';
     const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '');
     if (range) {
       const start = range[1] ? Number(range[1]) : 0;
       const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
       res.writeHead(206, {
-        'Content-Type': 'audio/mp4',
+        'Content-Type': type,
         'Accept-Ranges': 'bytes',
         'Content-Range': `bytes ${start}-${end}/${size}`,
         'Content-Length': end - start + 1,
       });
       createReadStream(cache + name, { start, end }).pipe(res);
     } else {
-      res.writeHead(200, { 'Content-Type': 'audio/mp4', 'Accept-Ranges': 'bytes', 'Content-Length': size });
+      res.writeHead(200, { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': size });
       createReadStream(cache + name).pipe(res);
     }
   });
