@@ -29,6 +29,9 @@ const lines = {
     'Great Sage: that track could not be loaded, skipping it.',
     'Great Sage: something went wrong with that one. Moving on.',
   ],
+  notOriginal: [
+    'Great Sage: the original is not free on SoundCloud, so this is the closest version I found.',
+  ],
   noVoice: ['Join a voice channel first, then call me.'],
   otherVoice: ['I am already playing in another channel here.'],
   nothing: ['Nothing is playing right now.'],

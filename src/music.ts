@@ -1,6 +1,7 @@
 import type { LavalinkManager, LavalinkNode, Player, Track, UnresolvedTrack } from 'lavalink-client';
 import { config } from './config.js';
 import { isApple, isDeezer, isSpotify, readDeezer, readSpotify, type SongInfo } from './links.js';
+import { best, canonFor, offOriginal } from './rank.js';
 import { listOf, relay, searchSoundCloud, type RelayHit } from './relay.js';
 
 export interface Requester {
@@ -42,8 +43,8 @@ async function findAudio(want: Want, player: Player, requester: Requester): Prom
   if (want.how === 'youtube' && want.uri && player.node.id === 'youtube') return loadOne(player.node, want.uri, requester);
   // metadata only (spotify, apple, deezer) or a youtube song that failed: soundcloud first, it is the reliable one
   const q = `${want.author} ${want.title}`.trim();
-  const hits = await searchSoundCloud(q, 8).catch(() => []);
-  const hit = nearest(hits, (h) => h.duration, want.duration);
+  const hits = await searchSoundCloud(q, 10).catch(() => []);
+  const hit = best(hits, q, { title: want.title, author: want.author, duration: want.duration });
   if (hit) return loadOne(player.node, await relay(hit.url), requester);
   if (player.node.id === 'youtube' && !want.noYoutube) {
     const res = await player.node.search({ query: q, source: 'ytmsearch' }, requester).catch(() => null);
@@ -86,6 +87,7 @@ const fromHit = (h: RelayHit, source: string): Want => ({ title: h.title, author
 export interface Found {
   tracks: (Track | UnresolvedTrack)[];
   name?: string; // set when it was a playlist or album
+  notOriginal?: boolean; // the free version found is a remix or a different cut
 }
 
 // turns whatever was typed into queue entries
@@ -121,9 +123,11 @@ export async function find(input: string, requester: Requester): Promise<Found> 
   }
   if (isUrl) throw new Error('that link is not a supported source');
 
-  // plain words: soundcloud, since youtube keeps asking for a login
-  const hits = await searchSoundCloud(text, 5);
-  return { tracks: hits.slice(0, 1).map((h) => queued(fromHit(h, 'soundcloud'), requester)) };
+  // plain words: soundcloud, ranked against the real song when deezer knows it
+  const [hits, canon] = await Promise.all([searchSoundCloud(text, 10), canonFor(text)]);
+  const hit = best(hits, text, canon);
+  if (!hit) return { tracks: [] };
+  return { tracks: [queued(fromHit(hit, 'soundcloud'), requester)], notOriginal: offOriginal(hit, text, canon) };
 }
 
 // when youtube refuses a song, look for the same song on soundcloud instead

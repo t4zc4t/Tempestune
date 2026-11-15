@@ -85,7 +85,8 @@ export async function onCommand(i: ChatInputCommandInteraction, lavalink: Lavali
     }
     if (found.name || found.tracks.length > 1) return i.editReply(`${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
     const t = found.tracks[0];
-    return i.editReply(idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}**`);
+    const note = found.notOriginal ? `\n-# ${say('notOriginal')}` : '';
+    return i.editReply((idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}**`) + note);
   }
 
   // stop works whenever the bot is in voice, even if nothing ever started playing
