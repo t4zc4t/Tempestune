@@ -5,14 +5,15 @@ import {
 import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
 import { cardButtons, cardEmbed, clock, dropCard, idleBoard, refreshCard, setBoard, SLIME } from './card.js';
 import { config } from './config.js';
-import { icon } from './icons.js';
+import { ic, icon } from './icons.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
 import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist, historyEmbed, playlistEmbed, playlistsEmbed, recent, savePlaylist, songOfTrack, songsOfQueue, toggleFavourite } from './library.js';
 import { canControl, isManager, listeners, settingsOf, settingsPanel, updateSettings } from './settings.js';
 import { applyPreset, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics } from './sound.js';
-import { find, fromSong, fromWant, pickNode, searchAll, stationWant, type Found, type Length, type Option, type Requester } from './music.js';
+import { find, fromSong, fromWant, pickNode, prepareAutoplay, searchAll, stationWant, workingStation, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
+import { FEATURED, featured, featuredSongs } from './featured.js';
 
 // one set of commands for both slash and the text prefix
 
@@ -93,6 +94,26 @@ function sameVoice(c: Ctx, player?: Player) {
 }
 
 // joins voice if needed, fetches the first song right away, queues the rest
+function featuredEmbed(f: NonNullable<ReturnType<typeof featured>>) {
+  const e = new EmbedBuilder()
+    .setColor(SLIME)
+    .setTitle(f.name)
+    .setDescription(`${f.about}\n\n${f.songs.map(([a, t], n) => `\`${n + 1}.\` ${t} · ${a}`).join('\n')}`.slice(0, 4000))
+    .setFooter({ text: `Play it with ${config.prefix} ${f.key}` });
+  return { embeds: [e] };
+}
+
+async function playFeatured(c: Ctx, lavalink: LavalinkManager, player: Player | undefined, key: string, mix = false) {
+  const f = featured(key)!;
+  const problem = sameVoice(c, player);
+  if (problem) return c.reply(problem, true);
+  await c.wait(say('searching'));
+  const requester: Requester = { id: c.user.id, name: c.user.username };
+  const songs = featuredSongs(f);
+  if (mix) for (let i = songs.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [songs[i], songs[j]] = [songs[j], songs[i]]; }
+  return enqueue(c, lavalink, player, { tracks: songs.map((s) => fromWant(s, requester)), name: f.name });
+}
+
 async function enqueue(c: Ctx, lavalink: LavalinkManager, player: Player | undefined, found: Found, intro = '') {
   if (!player) {
     const s = settingsOf(c.guildId);
@@ -218,10 +239,12 @@ const commands: Command[] = [
       if (problem) return c.reply(problem, true);
       const name = c.str('station') ?? '';
       await c.wait(say('searching'));
-      const [st] = await findStations(name, 1);
-      if (!st) return c.reply('Great Sage: no working station by that name.');
       const requester: Requester = { id: c.user.id, name: c.user.username };
-      return enqueue(c, lavalink, player, { tracks: [fromWant(stationWant(st), requester)] });
+      const stations = await findStations(name, 8);
+      if (!stations.length) return c.reply(`Great Sage: no station called "${name}". Try a genre like lofi, jazz or news.`);
+      const want = await workingStation(stations.map(stationWant), requester);
+      if (!want) return c.reply(`Great Sage: found ${stations.length} stations for "${name}" but none of them are on air right now.`);
+      return enqueue(c, lavalink, player, { tracks: [fromWant(want, requester)] });
     },
   },
   {
@@ -229,6 +252,7 @@ const commands: Command[] = [
     async run(c, _l, player) {
       const on = !player!.get('autoplay');
       player!.set('autoplay', on);
+      if (on) prepareAutoplay(player!, { id: c.member.client.user.id, name: 'autoplay' }).catch(() => {});
       await refreshCard(player!);
       return c.reply(on ? 'Autoplay is on. When the queue ends I will keep going with related songs.' : 'Autoplay is off.');
     },
@@ -252,7 +276,7 @@ const commands: Command[] = [
   {
     name: 'skip', aliases: ['s', 'next', 'n'], about: 'Skip to the next song', needsPlayer: true,
     async run(c, _l, player) {
-      return c.reply(await trySkip(c, player!));
+      return c.reply(await voteOr(c, player!, 'skip'));
     },
   },
   {
@@ -271,10 +295,11 @@ const commands: Command[] = [
       if (!player) return c.reply(say('nothing'), true);
       const problem = sameVoice(c, player);
       if (problem) return c.reply(problem, true);
-      if (!canControl(c.member, player)) return c.reply(say('djOnly'), true);
-      await dropCard(c.guildId);
-      await player.destroy();
-      return c.reply(say('stopped'));
+      if (!player.queue.current) {
+        await player.destroy();
+        return c.reply(say('stopped'));
+      }
+      return c.reply(await voteOr(c, player, 'stop'));
     },
   },
   {
@@ -450,7 +475,12 @@ const commands: Command[] = [
       }
       if (action === 'delete') return c.reply(deletePlaylist(me, name) ? `Deleted **${name}**.` : `You have no playlist called **${name}**.`, true);
       const list = getPlaylist(me, name);
-      if (!list) return c.reply(`No playlist called **${name}** (or with that code).`, true);
+      const ready = featured(name);
+      if (!list && ready && (action === 'load' || action === 'show')) {
+        if (action === 'show') return c.reply(featuredEmbed(ready));
+        return playFeatured(c, lavalink, player, ready.key);
+      }
+      if (!list) return c.reply(`No playlist called **${name}** (or with that code). Ready-made ones: ${FEATURED.map((f) => `\`${f.key}\``).join(', ')}.`, true);
       if (action === 'show') return c.reply({ embeds: [playlistEmbed(list)] });
       if (action === 'share') return c.reply(`Anyone can load **${list.name}** with \`${config.prefix} pl load ${list.code}\`.`);
       // load
@@ -461,6 +491,13 @@ const commands: Command[] = [
       return enqueue(c, lavalink, player, { tracks: list.songs.map((s) => fromWant(s, requester)), name: list.name });
     },
   },
+  ...FEATURED.map((f): Command => ({
+    name: f.key, aliases: f.key === 'tensura' ? ['slime', 'rimuru'] : ['animehits'], about: `Play ${f.name.toLowerCase()} (${f.songs.length} songs)`,
+    args: [{ name: 'order', kind: 'text', about: 'In order or shuffled', choices: ['in order', 'shuffled'] }],
+    async run(c, lavalink, player) {
+      return playFeatured(c, lavalink, player, f.key, /shuf|mix|random/i.test(c.str('order') ?? ''));
+    },
+  })),
   {
     name: 'like', aliases: ['fav', 'heart'], about: 'Add the song to your favourites (again to remove it)', needsPlayer: true,
     async run(c, _l, player) {
@@ -489,31 +526,162 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'settings', aliases: ['setup', 'config'], about: 'Server settings: DJ role, vote skip, 24/7, request channel (Manage Server)',
+    name: 'settings', aliases: ['setup', 'config'], about: 'Server settings: DJ role, 24/7, autoplay, even volume, request channel (Manage Server)',
     async run(c) {
       if (!isManager(c.member)) return c.reply('Only people with Manage Server can change the settings.', true);
       return c.reply(settingsPanel(c.guildId));
     },
   },
   {
-    name: 'help', aliases: ['h', 'commands'], about: 'All commands',
+    name: 'help', aliases: ['h', 'commands'], about: 'How to use Tempestune, page by page',
+    args: [{ name: 'command', kind: 'text', about: 'A command to explain, like play or loop' }],
     async run(c) {
-      const lines = commands.filter((x) => x.name !== 'help').map((x) => {
-        const args = (x.args ?? []).map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(' ');
-        const short = x.aliases.length ? ` · ${x.aliases.map((a) => `\`${a}\``).join(' ')}` : '';
-        return `\`${x.name}${args ? ' ' + args : ''}\`${short}\n-# ${x.about}`;
-      });
-      const e = new EmbedBuilder()
-        .setColor(SLIME)
-        .setAuthor({ name: 'Tempestune' })
-        .setDescription(`Use slash commands, or type **\`${config.prefix} \`** before any command, like \`${config.prefix} p faded\`.\n\n${lines.join('\n')}`);
-      return c.reply({ embeds: [e] });
+      const asked = (c.str('command') ?? '').trim().toLowerCase();
+      if (asked) {
+        const cmd = byName.get(asked);
+        if (cmd) return c.reply(commandHelp(cmd));
+        const page = HELP.findIndex((h) => h.title.toLowerCase().startsWith(asked));
+        if (page >= 0) return c.reply(helpPage(page));
+      }
+      return c.reply(helpPage(0));
     },
   },
 ];
 
 const byName = new Map<string, Command>();
 for (const cmd of commands) for (const n of [cmd.name, ...cmd.aliases]) byName.set(n, cmd);
+
+// ---------- help ----------
+
+interface HelpPage { title: string; icon: string; intro: string; cmds: [name: string, example: string][]; tips?: string[] }
+
+const p = () => config.prefix;
+const HELP: HelpPage[] = [
+  {
+    title: 'Getting started', icon: 'sage',
+    intro: 'Join a voice channel and ask for a song by name, a lyric, or a link. Every command works as a slash command or with the **`{p}`** prefix, and the short forms work too.',
+    cmds: [['play', 'p faded alan walker'], ['search', 'f when you\'re gone'], ['skip', 's'], ['stop', 'stop']],
+    tips: [
+      'Links from YouTube, Spotify, Apple Music, Deezer, SoundCloud and Bandcamp all work, playlists too.',
+      'The player card has buttons for pause, skip, loop, volume, lyrics, filters and likes.',
+      'Use the arrows below to flick through the pages, or `{p} help <command>` for one command.',
+    ],
+  },
+  {
+    title: 'Playing', icon: 'play',
+    intro: 'Control what is playing right now.',
+    cmds: [['play', 'p blinding lights'], ['pause', 'pause'], ['resume', 'r'], ['skip', 'next'], ['stop', 'dc'], ['volume', 'v 60'], ['seek', 'seek 1:30'], ['nowplaying', 'np'], ['autoplay', 'ap']],
+    tips: [
+      'Whoever asked for the song, the DJ role and admins can skip or stop straight away. Everyone else starts a vote, and half the people listening have to agree.',
+      'Autoplay keeps going with related songs and gets the next one ready while the current one plays.',
+    ],
+  },
+  {
+    title: 'Queue', icon: 'queue',
+    intro: 'Line songs up and move them around.',
+    cmds: [['queue', 'q'], ['skipto', 'st 4'], ['remove', 'rm 3'], ['move', 'mv 5 1'], ['shuffle', 'sh'], ['clear', 'cl'], ['loop', 'loop queue']],
+    tips: ['The queue is saved, so it comes back if the bot restarts.'],
+  },
+  {
+    title: 'Search and radio', icon: 'search',
+    intro: 'Find the exact version you want, or put on a live station.',
+    cmds: [['search', 'search lyrics: i see trees of green'], ['radio', 'fm lofi']],
+    tips: [
+      'Search shows a menu of results from every source, so you can pick the original over a remix.',
+      'Start a search with `lyrics:` to find a song from a line you remember.',
+      'Radio tries several stations for your word and plays the first one that is on air.',
+    ],
+  },
+  {
+    title: 'Sound and lyrics', icon: 'filters',
+    intro: 'Shape how it sounds and sing along.',
+    cmds: [['lyrics', 'ly'], ['filter', 'fx bassboost'], ['speed', 'sp 1.25'], ['pitch', 'pt 0.9']],
+    tips: [
+      `Filters: ${Object.keys(PRESETS).join(', ')}.`,
+      'Lyrics follow the song line by line when synced lyrics exist.',
+    ],
+  },
+  {
+    title: 'Playlists and favourites', icon: 'like',
+    intro: 'Keep the songs you love and play them back in one go.',
+    cmds: [['tensura', 'tensura shuffled'], ['anime', 'anime'], ['playlist', 'pl save road trip'], ['like', 'fav'], ['favourites', 'favs'], ['history', 'hist']],
+    tips: [
+      'Playlist actions: `list`, `save <name>`, `load <name or code>`, `show`, `add`, `delete`, `share`, `import <link>`.',
+      'Share a playlist and anyone can load it with its 6 letter code.',
+      'The ready-made ones (`tensura`, `anime`) also load with `{p} pl load tensura`.',
+    ],
+  },
+  {
+    title: 'Server', icon: 'settings',
+    intro: 'For admins (Manage Server). Everything is set from one panel.',
+    cmds: [['settings', 'setup']],
+    tips: [
+      '**DJ role:** with one set, only DJs, admins and the song\'s requester can change the music. Without one, everyone can.',
+      '**24/7:** stays in the voice channel even when the queue ends or everyone leaves.',
+      '**Request channel:** any message there is played as a song request and then tidied away.',
+      '**Even volume:** evens out loud and quiet songs.',
+    ],
+  },
+];
+
+const fill = (t: string) => t.replaceAll('{p}', p());
+
+function usage(cmd: Command) {
+  const args = (cmd.args ?? []).map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(' ');
+  return `${cmd.name}${args ? ' ' + args : ''}`;
+}
+
+function helpPage(n: number): Payload {
+  const page = Math.max(0, Math.min(HELP.length - 1, n));
+  const h = HELP[page];
+  const lines = h.cmds.map(([name, example]) => {
+    const cmd = byName.get(name);
+    if (!cmd) return '';
+    const short = cmd.aliases.length ? ` · ${cmd.aliases.map((a) => `\`${a}\``).join(' ')}` : '';
+    return `**\`/${usage(cmd)}\`**${short}\n${cmd.about}\n-# e.g. \`${p()} ${example}\``;
+  }).filter(Boolean);
+  const e = new EmbedBuilder()
+    .setColor(SLIME)
+    .setAuthor({ name: 'Tempestune help' })
+    .setTitle(`${ic(h.icon)} ${h.title}`.trim())
+    .setDescription(fill([h.intro, '', ...lines, ...(h.tips?.length ? ['', ...h.tips.map((t) => `> ${t}`)] : [])].join('\n')).slice(0, 4000))
+    .setFooter({ text: `Page ${page + 1} of ${HELP.length} · prefix: ${p()}` });
+  const nav = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`tt:help:${page - 1}`).setLabel('Back').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`tt:help:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Primary).setDisabled(page === HELP.length - 1),
+  );
+  const jump = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder().setCustomId('tt:help').setPlaceholder('Jump to a page').addOptions(
+      HELP.map((x, i) => ({ label: x.title, value: String(i), default: i === page, description: x.intro.slice(0, 90) })),
+    ),
+  );
+  return { embeds: [e], components: [jump, nav] };
+}
+
+function commandHelp(cmd: Command): Payload {
+  const args = (cmd.args ?? []).map((a) => `\`${a.name}\`${a.required ? '' : ' (optional)'}: ${a.about}${a.choices ? ` · ${a.choices.join(', ')}` : ''}`);
+  const page = HELP.find((h) => h.cmds.some(([n]) => n === cmd.name));
+  const example = page?.cmds.find(([n]) => n === cmd.name)?.[1];
+  const e = new EmbedBuilder()
+    .setColor(SLIME)
+    .setTitle(`/${usage(cmd)}`)
+    .setDescription([
+      cmd.about,
+      cmd.aliases.length ? `\n**Short forms:** ${cmd.aliases.map((a) => `\`${p()} ${a}\``).join(', ')}` : '',
+      args.length ? `\n**Options**\n${args.join('\n')}` : '',
+      example ? `\n**Example:** \`${p()} ${example}\`` : '',
+    ].join('\n'))
+    .setFooter({ text: page ? `Part of: ${page.title}` : 'Tempestune' });
+  return { embeds: [e] };
+}
+
+export async function onHelp(i: ButtonInteraction | StringSelectMenuInteraction) {
+  const n = i.isStringSelectMenu() ? Number(i.values[0]) : Number(i.customId.split(':')[2]);
+  const page = helpPage(Number.isFinite(n) ? n : 0);
+  // someone else's help message: show them their own copy instead of flipping it
+  if (i.message.interactionMetadata && i.message.interactionMetadata.user.id !== i.user.id) return i.reply({ ...page, flags: MessageFlags.Ephemeral });
+  return i.update(page);
+}
 
 export const definitions = commands.map((cmd) => {
   const b = new SlashCommandBuilder().setName(cmd.name).setDescription(cmd.about).setContexts(InteractionContextType.Guild);
@@ -541,25 +709,30 @@ async function dispatch(cmd: Command, c: Ctx, lavalink: LavalinkManager) {
   return cmd.run(c, lavalink, player);
 }
 
-// skipping: the dj, the person who asked for the song, or a vote when vote skip is on
-async function trySkip(c: Ctx, player: Player): Promise<string> {
+// skip and stop: admins, the dj role, whoever asked for the song (or anyone alone with the bot) do it straight away,
+// everyone else starts a vote that needs half the people listening
+async function voteOr(c: Ctx, player: Player, action: 'skip' | 'stop'): Promise<string> {
   const s = settingsOf(c.guildId);
   const mine = (player.queue.current?.requester as Requester | undefined)?.id === c.user.id;
-  const free = s.voteSkip ? isManager(c.member) || (s.djRole && c.member.roles.cache.has(s.djRole)) || mine || listeners(c.member, player) <= 1 : canControl(c.member, player) || mine;
-  if (free) {
-    await player.skip(0, false);
-    return say('skipped');
-  }
-  if (!s.voteSkip) return say('djOnly');
-  const votes = new Set<string>(player.get('votes') ?? []);
+  const direct = isManager(c.member) || (!!s.djRole && c.member.roles.cache.has(s.djRole)) || mine || listeners(c.member, player) <= 1;
+  const doIt = async () => {
+    if (action === 'skip') {
+      await player.skip(0, false);
+      return say('skipped');
+    }
+    await dropCard(c.guildId);
+    await player.destroy();
+    return say('stopped');
+  };
+  if (direct) return doIt();
+  const key = `votes:${action}`;
+  const votes = new Set<string>(player.get(key) ?? []);
   votes.add(c.user.id);
-  player.set('votes', [...votes]);
-  const need = Math.ceil(listeners(c.member, player) / 2);
-  if (votes.size >= need) {
-    await player.skip(0, false);
-    return `Vote passed (${votes.size}/${need}). ${say('skipped')}`;
-  }
-  return `Vote to skip: ${votes.size}/${need}.`;
+  player.set(key, [...votes]);
+  const need = Math.max(2, Math.ceil(listeners(c.member, player) / 2));
+  if (votes.size >= need) return `Vote passed (${votes.size}/${need}). ${await doIt()}`;
+  const what = action === 'skip' ? 'skip this song' : 'stop and clear the queue';
+  return `<@${c.user.id}> wants to ${what}: ${votes.size}/${need} votes. Others in the channel can use \`${config.prefix} ${action}\` too.`;
 }
 
 // ---------- slash ----------
@@ -669,9 +842,10 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (!player?.queue.current) return i.update({ components: [] });
   const vc = (i.member as GuildMember | null)?.voice?.channelId;
   if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
-  if (what === 'skip') {
-    const note = await trySkip(interactionCtx(i), player);
-    return i.reply({ content: note, flags: MessageFlags.Ephemeral });
+  if (what === 'skip' || what === 'stop') {
+    const note = await voteOr(interactionCtx(i), player, what);
+    const counting = note.includes('votes.');
+    return i.reply(counting ? { content: note } : { content: note, flags: MessageFlags.Ephemeral });
   }
   if (!canControl(i.member as GuildMember, player)) return i.reply({ content: say('djOnly'), flags: MessageFlags.Ephemeral });
   if (what === 'shuffle') {
@@ -681,16 +855,13 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (what === 'pause') player.paused ? await player.resume() : await player.pause();
   if (what === 'vdown') await player.setVolume(Math.max(0, player.volume - 10));
   if (what === 'vup') await player.setVolume(Math.min(150, player.volume + 10));
-  if (what === 'auto') player.set('autoplay', !player.get('autoplay'));
+  if (what === 'auto') {
+    player.set('autoplay', !player.get('autoplay'));
+    if (player.get('autoplay')) prepareAutoplay(player, { id: i.client.user.id, name: 'autoplay' }).catch(() => {});
+  }
   if (what === 'loop') {
     const order: RepeatMode[] = ['off', 'track', 'queue'];
     await player.setRepeatMode(order[(order.indexOf(player.repeatMode) + 1) % 3]);
-  }
-  if (what === 'stop') {
-    await i.update({ components: [] });
-    await dropCard(i.guildId!);
-    await player.destroy();
-    return;
   }
   return i.update({ embeds: [cardEmbed(player)], components: cardButtons(player) });
 }

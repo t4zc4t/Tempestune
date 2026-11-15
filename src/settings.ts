@@ -68,7 +68,7 @@ export function settingsPanel(guild: string) {
     .setDescription(
       [
         `**DJ role:** ${s.djRole ? `<@&${s.djRole}>` : 'none, everyone can control the music'}`,
-        `**Vote skip:** ${onoff(s.voteSkip)}${s.voteSkip ? ' · half the listeners have to agree' : ''}`,
+        '**Skip and stop:** whoever asked for the song, the DJ role and admins do it straight away, everyone else votes (half the listeners)',
         `**24/7:** ${onoff(s.stay)}${s.stay && s.stayVoice ? ` · stays in <#${s.stayVoice}>` : ''}`,
         `**Autoplay by default:** ${onoff(s.autoplay)}`,
         `**Even volume:** ${onoff(s.normalise)}`,
@@ -82,7 +82,6 @@ export function settingsPanel(guild: string) {
     embeds: [e],
     components: [
       new ActionRowBuilder<ButtonBuilder>().addComponents(
-        b('vote', `Vote skip: ${onoff(s.voteSkip)}`, s.voteSkip),
         b('stay', `24/7: ${onoff(s.stay)}`, s.stay),
         b('auto', `Autoplay: ${onoff(s.autoplay)}`, s.autoplay),
         b('norm', `Even volume: ${onoff(s.normalise)}`, s.normalise),
