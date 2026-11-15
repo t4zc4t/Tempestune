@@ -91,18 +91,9 @@ export function relay(url: string): Promise<string> {
   const going = busy.get(key);
   if (going) return going;
   // ffmpeg only repairs the container (soundcloud sends fragmented mp4), the audio is never re-encoded
-  const job = run(
-    [
-      // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
-      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node'] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
-      '--ffmpeg-location', ffmpeg,
-      '--no-playlist', '--no-progress', '--no-warnings', '--no-part',
-      '-P', `temp:${cache}tmp`,
-      '-o', `${cache}${key}.%(ext)s`,
-      url,
-    ],
-    5 * 60_000,
-  )
+  const job = fetchTo(url, key, false)
+    // youtube sometimes refuses one player type, the tv one usually still works
+    .catch((e) => (isYouTube(url) ? fetchTo(url, key, true) : Promise.reject(e)))
     .then(() => {
       const f = cached(key);
       if (!f) throw new Error('download finished but no file was written');
@@ -113,6 +104,21 @@ export function relay(url: string): Promise<string> {
   busy.set(key, job);
   return job;
 }
+
+const fetchTo = (url: string, key: string, retry: boolean) =>
+  run(
+    [
+      // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
+      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node'] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
+      ...(retry ? ['--extractor-args', 'youtube:player_client=tv,web_safari'] : []),
+      '--ffmpeg-location', ffmpeg,
+      '--no-playlist', '--no-progress', '--no-warnings', '--no-part',
+      '-P', `temp:${cache}tmp`,
+      '-o', `${cache}${key}.%(ext)s`,
+      url,
+    ],
+    5 * 60_000,
+  );
 
 // oldest files go first once the cache is over its size
 function trim() {
@@ -162,7 +168,8 @@ export function startRelay() {
 
 // a soundcloud/bandcamp link as a list of tracks: one for a track, many for sets and albums
 export async function listOf(url: string): Promise<{ name?: string; hits: RelayHit[] }> {
-  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', ...(isYouTube(url) ? ['--js-runtimes', 'node'] : []), url], 60_000));
+  // big playlists stop at 300 songs, plenty for one session
+  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', '--playlist-end', '300', ...(isYouTube(url) ? ['--js-runtimes', 'node'] : []), url], 60_000));
   const art = (x: any) => [...(x.thumbnails ?? [])].reverse().find((t: any) => (t.width ?? 0) >= 300)?.url ?? x.thumbnail;
   const hit = (e: any): RelayHit => ({
     title: e.title ?? 'Unknown title',
