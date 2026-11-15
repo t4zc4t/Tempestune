@@ -3,10 +3,10 @@ import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, isCard, showCard } from './card.js';
-import { definitions, onButton, onCommand, onMessage, queuePage } from './commands.js';
+import { definitions, onAutocomplete, onButton, onCommand, onMessage, onPick, queuePage } from './commands.js';
 import { config } from './config.js';
 import { log } from './log.js';
-import { fallbackFor, useManager, warmNext, type Requester } from './music.js';
+import { fallbackFor, notePlayed, related, useManager, warmNext, type Requester } from './music.js';
 import { startRelay } from './relay.js';
 import { say } from './sage.js';
 
@@ -40,7 +40,8 @@ lavalink.nodeManager
   .on('error', (node, error) => log(`node ${node.id} error: ${error.message}`));
 
 lavalink
-  .on('trackStart', (player) => {
+  .on('trackStart', (player, track) => {
+    if (track) notePlayed(player, track.info.title);
     showCard(client, player);
     warmNext(player);
   })
@@ -60,7 +61,19 @@ lavalink
     if (ch?.isSendable()) ch.send(say('failed')).catch(() => {});
   })
   .on('trackStuck', (_player, track) => log(`track stuck: ${track?.info?.title}`))
-  .on('queueEnd', async (player) => {
+  .on('queueEnd', async (player, track) => {
+    // autoplay: one related song at a time, as long as it stays on
+    if (player.get('autoplay')) {
+      const next = await related(player, (track?.requester as Requester) ?? { id: client.user!.id, name: 'autoplay' }).catch((e) => {
+        log('autoplay failed:', e instanceof Error ? e.message : e);
+        return null;
+      });
+      if (next) {
+        await player.queue.add(next);
+        await player.play().catch((e: unknown) => log('autoplay play failed', e));
+        return;
+      }
+    }
     await dropCard(player.guildId);
     const ch = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
     if (ch?.isSendable()) ch.send(say('queueEnd')).catch(() => {});
@@ -106,7 +119,9 @@ client.on('messageCreate', (m) => {
 
 client.on('interactionCreate', async (i) => {
   try {
+    if (i.isAutocomplete()) return void (await onAutocomplete(i));
     if (i.isChatInputCommand() && i.inGuild()) await onCommand(i, lavalink);
+    else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
     else if (i.isButton() && i.customId.startsWith('tt:') && i.inGuild()) {
       const id = i.customId;
       if (id === 'tt:queue') {

@@ -63,7 +63,7 @@ export function cardButtons(player: Player, off = false) {
       b('loop', loop),
       b('queue', 'Queue'),
     ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(b('vdown', 'Vol −'), b('vup', 'Vol +')),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(b('vdown', 'Vol −'), b('vup', 'Vol +'), b('auto', player.get('autoplay') ? 'Autoplay: on' : 'Autoplay: off')),
   ];
 }
 

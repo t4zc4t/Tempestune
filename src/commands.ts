@@ -1,17 +1,18 @@
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, SlashCommandBuilder,
-  type ButtonInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
+  type AutocompleteInteraction, type ButtonInteraction, type StringSelectMenuInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
 } from 'discord.js';
 import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
 import { cardButtons, cardEmbed, clock, dropCard, refreshCard, SLIME } from './card.js';
 import { config } from './config.js';
 import { log } from './log.js';
-import { find, pickNode, type Requester } from './music.js';
+import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
+import { find, fromSong, fromWant, pickNode, searchAll, stationWant, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
 
 // one set of commands for both slash and the text prefix
 
-type Payload = { content?: string; embeds?: EmbedBuilder[]; components?: ActionRowBuilder<ButtonBuilder>[] };
+type Payload = { content?: string; embeds?: EmbedBuilder[]; components?: ActionRowBuilder<any>[] };
 
 export interface Ctx {
   guildId: string;
@@ -31,7 +32,7 @@ interface Command {
   aliases: string[];
   about: string;
   // how prefix words map to options, in order
-  args?: { name: string; kind: 'text' | 'int'; about: string; required?: boolean; rest?: boolean }[];
+  args?: { name: string; kind: 'text' | 'int'; about: string; required?: boolean; rest?: boolean; choices?: string[]; auto?: boolean }[];
   needsPlayer?: boolean;
   run(c: Ctx, lavalink: LavalinkManager, player: Player | undefined): Promise<unknown>;
 }
@@ -81,10 +82,60 @@ function sameVoice(c: Ctx, player?: Player) {
   return null;
 }
 
+// joins voice if needed, fetches the first song right away, queues the rest
+async function enqueue(c: Ctx, lavalink: LavalinkManager, player: Player | undefined, found: Found, intro = '') {
+  if (!player) {
+    player = lavalink.createPlayer({
+      guildId: c.guildId, voiceChannelId: c.member.voice.channelId!, textChannelId: c.channelId, selfDeaf: true, volume: 80, node: pickNode(),
+    });
+  }
+  if (!player.connected) await player.connect();
+  const lead = intro ? `${intro}\n` : '';
+
+  // the first song is fetched right away, so a dead one says so instead of failing quietly later
+  const first = found.tracks[0];
+  if (lavalink.utils.isUnresolvedTrack(first)) {
+    const ok = await first.resolve(player).then(() => true, (e: unknown) => {
+      log('first song failed:', e instanceof Error ? e.message.split('\n')[0] : e);
+      return false;
+    });
+    if (!ok) {
+      found.tracks.shift();
+      if (!found.tracks.length) {
+        if (!player.queue.current) await player.destroy().catch(() => {});
+        return c.reply(lead + say('failed'));
+      }
+    }
+  }
+  const idle = !player.queue.current;
+  await player.queue.add(found.tracks);
+  if (idle) {
+    const started = await player.play().then(() => true, (e: unknown) => {
+      log('play failed:', e instanceof Error ? e.message : e);
+      return false;
+    });
+    if (!started) return c.reply(lead + say('failed'));
+  }
+  if (found.name || found.tracks.length > 1) return c.reply(`${lead}${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
+  const t = found.tracks[0];
+  const note = found.notOriginal ? `\n-# ${say('notOriginal')}` : '';
+  return c.reply(lead + (idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}** (#${player.queue.tracks.length})`) + note);
+}
+
+// search menus remember their results for a while
+const menus = new Map<string, { options: Option[]; requester: Requester; until: number }>();
+function remember(options: Option[], requester: Requester) {
+  const now = Date.now();
+  for (const [k, v] of menus) if (v.until < now) menus.delete(k);
+  const key = now.toString(36) + Math.random().toString(36).slice(2, 6);
+  menus.set(key, { options, requester, until: now + 15 * 60_000 });
+  return key;
+}
+
 const commands: Command[] = [
   {
     name: 'play', aliases: ['p'], about: 'Play a song, or add it to the queue',
-    args: [{ name: 'query', kind: 'text', about: 'Song name, or a YouTube, Spotify, SoundCloud, Apple Music or Deezer link', required: true, rest: true }],
+    args: [{ name: 'query', kind: 'text', about: 'Song name, or a YouTube, Spotify, SoundCloud, Apple Music or Deezer link', required: true, rest: true, auto: true }],
     async run(c, lavalink, player) {
       const problem = sameVoice(c, player);
       if (problem) return c.reply(problem, true);
@@ -98,43 +149,75 @@ const commands: Command[] = [
         return e instanceof Error && e.message === 'youtube is off' ? 'youtube' : null;
       });
       if (found === 'youtube') return c.reply('YouTube is switched off on this bot right now.');
-      if (!found?.tracks.length) return c.reply(say('notFound'));
+      if (!found?.tracks.length) {
+        const dym = await didYouMean(query);
+        return c.reply(dym ? `${say('notFound')}\nDid you mean **${dym}**? Try \`${config.prefix} p ${dym}\`` : say('notFound'));
+      }
+      return enqueue(c, lavalink, player, found);
+    },
+  },
+  {
+    name: 'search', aliases: ['find', 'f'], about: 'Search every source and pick the exact one',
+    args: [
+      { name: 'query', kind: 'text', about: 'What to look for (start with "lyrics:" to find a song by a line from it)', required: true, rest: true },
+      { name: 'source', kind: 'text', about: 'Only one source', choices: ['all', 'youtube', 'soundcloud', 'radio', 'jamendo'] },
+      { name: 'length', kind: 'text', about: 'Song length', choices: ['any', 'short', 'normal', 'long'] },
+    ],
+    async run(c, lavalink, player) {
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      let query = c.str('query') ?? '';
+      // prefix users can add "source:radio" or "length:short" anywhere
+      let source = c.str('source') ?? 'all';
+      let length = (c.str('length') ?? 'any') as Length;
+      query = query.replace(/\bsource:(\w+)/i, (_, v) => ((source = v.toLowerCase()), '')).replace(/\blength:(\w+)/i, (_, v) => ((length = v.toLowerCase() as Length), '')).trim();
+      if (!query) return c.reply('What should I search for?', true);
+      await c.wait(say('searching'));
+      const requester: Requester = { id: c.user.id, name: c.user.username };
 
-      if (!player) {
-        player = lavalink.createPlayer({
-          guildId: c.guildId, voiceChannelId: c.member.voice.channelId!, textChannelId: c.channelId, selfDeaf: true, volume: 80, node: pickNode(),
-        });
+      // a line from the lyrics: find the song, then play it
+      const line = /^lyrics?:\s*(.+)$/i.exec(query)?.[1];
+      if (line) {
+        const song = await songFromLine(line);
+        if (!song) return c.reply('Great Sage: no song found with that line. Try a longer bit of it?');
+        return enqueue(c, lavalink, player, { tracks: [fromSong(song, requester)] }, `Great Sage: that line is from **${song.title}** by ${song.author}.`);
       }
-      if (!player.connected) await player.connect();
 
-      // the first song is fetched right away, so a dead one says so instead of failing quietly later
-      const first = found.tracks[0];
-      if (lavalink.utils.isUnresolvedTrack(first)) {
-        const ok = await first.resolve(player).then(() => true, (e: unknown) => {
-          log('first song failed:', e instanceof Error ? e.message.split('\n')[0] : e);
-          return false;
-        });
-        if (!ok) {
-          found.tracks.shift();
-          if (!found.tracks.length) {
-            if (!player.queue.current) await player.destroy().catch(() => {});
-            return c.reply(say('failed'));
-          }
-        }
+      const options = await searchAll(query, source, length);
+      if (!options.length) {
+        const dym = await didYouMean(query);
+        return c.reply(dym ? `${say('notFound')}\nDid you mean **${dym}**?` : say('notFound'));
       }
-      const idle = !player.queue.current;
-      await player.queue.add(found.tracks);
-      if (idle) {
-        const started = await player.play().then(() => true, (e: unknown) => {
-          log('play failed:', e instanceof Error ? e.message : e);
-          return false;
-        });
-        if (!started) return c.reply(say('failed'));
-      }
-      if (found.name || found.tracks.length > 1) return c.reply(`${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
-      const t = found.tracks[0];
-      const note = found.notOriginal ? `\n-# ${say('notOriginal')}` : '';
-      return c.reply((idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}** (#${player.queue.tracks.length})`) + note);
+      const key = remember(options, requester);
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`tt:pick:${key}`)
+        .setPlaceholder('Pick one to play')
+        .addOptions(options.map((o, n) => ({ label: cut(o.label, 100), description: cut(o.detail, 100), value: String(n) })));
+      const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: 'Great Sage: search results' }).setDescription(`**${cut(query, 80)}** · ${options.length} found. Pick one below.`);
+      return c.reply({ embeds: [e], components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] });
+    },
+  },
+  {
+    name: 'radio', aliases: ['fm'], about: 'Play an internet radio station',
+    args: [{ name: 'station', kind: 'text', about: 'Station name, like lofi or bbc radio 1', required: true, rest: true }],
+    async run(c, lavalink, player) {
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      const name = c.str('station') ?? '';
+      await c.wait(say('searching'));
+      const [st] = await findStations(name, 1);
+      if (!st) return c.reply('Great Sage: no working station by that name.');
+      const requester: Requester = { id: c.user.id, name: c.user.username };
+      return enqueue(c, lavalink, player, { tracks: [fromWant(stationWant(st), requester)] });
+    },
+  },
+  {
+    name: 'autoplay', aliases: ['ap', 'auto'], about: 'Keep playing related songs when the queue ends', needsPlayer: true,
+    async run(c, _l, player) {
+      const on = !player!.get('autoplay');
+      player!.set('autoplay', on);
+      await refreshCard(player!);
+      return c.reply(on ? 'Autoplay is on. When the queue ends I will keep going with related songs.' : 'Autoplay is off.');
     },
   },
   {
@@ -303,7 +386,13 @@ export const definitions = commands.map((cmd) => {
   const b = new SlashCommandBuilder().setName(cmd.name).setDescription(cmd.about).setContexts(InteractionContextType.Guild);
   for (const a of cmd.args ?? []) {
     if (a.kind === 'int') b.addIntegerOption((o) => o.setName(a.name).setDescription(a.about).setRequired(!!a.required));
-    else b.addStringOption((o) => o.setName(a.name).setDescription(a.about).setRequired(!!a.required));
+    else
+      b.addStringOption((o) => {
+        o.setName(a.name).setDescription(a.about).setRequired(!!a.required);
+        if (a.choices) o.addChoices(...a.choices.map((ch) => ({ name: ch, value: ch })));
+        if (a.auto) o.setAutocomplete(true);
+        return o;
+      });
   }
   return b.toJSON();
 });
@@ -323,22 +412,7 @@ async function dispatch(cmd: Command, c: Ctx, lavalink: LavalinkManager) {
 export async function onCommand(i: ChatInputCommandInteraction, lavalink: LavalinkManager) {
   const cmd = byName.get(i.commandName);
   if (!cmd) return;
-  const c: Ctx = {
-    guildId: i.guildId!,
-    channelId: i.channelId,
-    member: i.member as GuildMember,
-    user: i.user,
-    str: (n) => i.options.getString(n),
-    int: (n) => i.options.getInteger(n),
-    async reply(p, quiet) {
-      const body = typeof p === 'string' ? { content: p } : p;
-      if (i.deferred || i.replied) await i.editReply(body);
-      else await i.reply(quiet ? { ...body, flags: MessageFlags.Ephemeral } : body);
-    },
-    async wait() {
-      if (!i.deferred && !i.replied) await i.deferReply();
-    },
-  };
+  const c = interactionCtx(i);
   return dispatch(cmd, c, lavalink);
 }
 
@@ -405,6 +479,7 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (what === 'pause') player.paused ? await player.resume() : await player.pause();
   if (what === 'vdown') await player.setVolume(Math.max(0, player.volume - 10));
   if (what === 'vup') await player.setVolume(Math.min(150, player.volume + 10));
+  if (what === 'auto') player.set('autoplay', !player.get('autoplay'));
   if (what === 'loop') {
     const order: RepeatMode[] = ['off', 'track', 'queue'];
     await player.setRepeatMode(order[(order.indexOf(player.repeatMode) + 1) % 3]);
@@ -421,4 +496,48 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     return;
   }
   return i.update({ embeds: [cardEmbed(player)], components: cardButtons(player) });
+}
+
+// ---------- typing suggestions for /play ----------
+
+export async function onAutocomplete(i: AutocompleteInteraction) {
+  const focused = i.options.getFocused(true);
+  if (i.commandName !== 'play' || focused.name !== 'query') return i.respond([]);
+  const list = await suggestSongs(String(focused.value)).catch(() => []);
+  return i.respond(list).catch(() => {});
+}
+
+// ---------- a pick from the search menu ----------
+
+export async function onPick(i: StringSelectMenuInteraction, lavalink: LavalinkManager) {
+  const key = i.customId.split(':')[2];
+  const menu = menus.get(key);
+  if (!menu) return i.update({ content: 'That search has expired, run it again.', embeds: [], components: [] });
+  const option = menu.options[Number(i.values[0])];
+  if (!option) return i.update({ components: [] });
+  const c = interactionCtx(i);
+  const player = lavalink.getPlayer(c.guildId);
+  const problem = sameVoice(c, player);
+  if (problem) return i.reply({ content: problem, flags: MessageFlags.Ephemeral });
+  await i.update({ content: `${say('searching')} **${cut(option.label, 80)}**`, embeds: [], components: [] });
+  return enqueue(c, lavalink, player, { tracks: [fromWant(option.want, { id: i.user.id, name: i.user.username })] });
+}
+
+function interactionCtx(i: ChatInputCommandInteraction | StringSelectMenuInteraction): Ctx {
+  return {
+    guildId: i.guildId!,
+    channelId: i.channelId,
+    member: i.member as GuildMember,
+    user: i.user,
+    str: (n) => (i.isChatInputCommand() ? i.options.getString(n) : null),
+    int: (n) => (i.isChatInputCommand() ? i.options.getInteger(n) : null),
+    async reply(p, quiet) {
+      const body = typeof p === 'string' ? { content: p } : p;
+      if (i.deferred || i.replied) await i.editReply(body);
+      else await i.reply(quiet ? { ...body, flags: MessageFlags.Ephemeral } : body);
+    },
+    async wait() {
+      if (!i.deferred && !i.replied) await i.deferReply();
+    },
+  };
 }
