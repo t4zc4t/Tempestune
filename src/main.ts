@@ -5,6 +5,7 @@ import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, idleBoard, isCard, setBoard, showCard } from './card.js';
 import { definitions, onAutocomplete, onButton, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
 import { allSettings, settingsOf } from './settings.js';
+import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './keep.js';
 import { noteHistory, songOfTrack } from './library.js';
 import { normalise, stopLyrics } from './sound.js';
 import { config } from './config.js';
@@ -37,7 +38,11 @@ const lavalink = new LavalinkManager({
 useManager(lavalink);
 
 lavalink.nodeManager
-  .on('connect', (node) => log(`node ${node.id} connected`))
+  .on('connect', (node) => {
+    log(`node ${node.id} connected`);
+    // after a lavalink restart (or the bot's own), bring back whatever was playing
+    if (client.isReady()) setTimeout(() => restoreAll(lavalink, client.user!.id), 3000);
+  })
   .on('disconnect', (node, reason) => log(`node ${node.id} dropped (${reason.reason ?? reason.code})`))
   .on('error', (node, error) => log(`node ${node.id} error: ${error.message}`));
 
@@ -58,6 +63,7 @@ lavalink
     normalise(player).catch(() => {});
     showCard(client, player);
     warmNext(player);
+    saveQueue(player);
   })
   .on('trackError', async (player, track, payload) => {
     log(`track failed: ${track?.info?.title}`, String((payload as any)?.exception?.message ?? (payload as any)?.message ?? '').split('\n')[0]);
@@ -99,9 +105,11 @@ lavalink
       }, 5 * 60_000);
     }
   })
-  .on('playerDestroy', (player) => {
+  .on('playerDestroy', (player, reason) => {
     dropCard(player.guildId);
     stopLyrics(player.guildId);
+    // stopped on purpose: forget it. broken by a node: keep it for when lavalink is back
+    if (!keepOnDestroy(reason)) forgetQueue(player.guildId);
   });
 
 client.on('raw', (d) => lavalink.sendRawData(d));
@@ -148,6 +156,8 @@ client.once('clientReady', async (c) => {
     if (s.stay) await stayIn(lavalink, guild);
   }
   log(`${c.user.tag} is up, youtube ${config.youtube ? 'on' : 'off'}`);
+  // the node usually connects before discord is ready, so restore here as well
+  setTimeout(() => restoreAll(lavalink, c.user.id), 4000);
 });
 
 client.on('messageCreate', (m) => {
@@ -186,6 +196,7 @@ client.on('interactionCreate', async (i) => {
 // heartbeat for the tray: when, and which nodes are up
 const alive = fileURLToPath(new URL('../logs/.alive', import.meta.url));
 setInterval(() => {
+  saveAll(lavalink);
   const n = (id: string) => lavalink.nodeManager.nodes.get(id)?.connected ?? null;
   const beat = { t: client.isReady() ? Date.now() : 0, main: n('main'), youtube: config.youtube, players: lavalink.players.size };
   try {
@@ -203,6 +214,7 @@ const self = fileURLToPath(import.meta.url);
 watchFile(self, { interval: 3000 }, (now, before) => {
   if (now.mtimeMs === before.mtimeMs) return;
   log('new build found, restarting');
+  saveAll(lavalink);
   setTimeout(() => process.exit(0), 2000);
 });
 
