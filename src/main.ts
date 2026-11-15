@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { watchFile, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
@@ -32,7 +32,8 @@ const lavalink = new LavalinkManager({
   playerOptions: {
     defaultSearchPlatform: 'scsearch',
     useUnresolvedData: true,
-    onDisconnect: { autoReconnect: true, destroyPlayer: false },
+    // a manual disconnect means leave, not come straight back
+    onDisconnect: { autoReconnect: false, destroyPlayer: true },
     onEmptyQueue: { destroyAfterMs: 5 * 60_000 },
   },
 });
@@ -72,6 +73,27 @@ lavalink
   .on('playerDestroy', (player) => dropCard(player.guildId));
 
 client.on('raw', (d) => lavalink.sendRawData(d));
+
+// leave once everyone else has left the voice channel for a couple of minutes
+const lonely = new Map<string, NodeJS.Timeout>();
+client.on('voiceStateUpdate', (before, after) => {
+  const gid = (before.guild ?? after.guild).id;
+  const player = lavalink.getPlayer(gid);
+  if (!player?.voiceChannelId) return;
+  const channel = client.channels.cache.get(player.voiceChannelId);
+  if (!channel?.isVoiceBased()) return;
+  const people = channel.members.filter((m) => !m.user.bot).size;
+  if (people > 0) {
+    clearTimeout(lonely.get(gid));
+    lonely.delete(gid);
+  } else if (!lonely.has(gid)) {
+    lonely.set(gid, setTimeout(() => {
+      lonely.delete(gid);
+      dropCard(gid);
+      lavalink.getPlayer(gid)?.destroy().catch(() => {});
+    }, 2 * 60_000));
+  }
+});
 
 // slash commands per server, so new ones show up straight away
 const register = (g: Guild) => g.commands.set(definitions).catch((e) => log(`commands for ${g.name} failed`, e));
@@ -113,6 +135,14 @@ setInterval(() => {
 
 process.on('unhandledRejection', (e) => log('unhandled', e));
 client.on('error', (e) => log('discord error', e));
+
+// a fresh build replaces the running one: exit and let the tray start it again
+const self = fileURLToPath(import.meta.url);
+watchFile(self, { interval: 3000 }, (now, before) => {
+  if (now.mtimeMs === before.mtimeMs) return;
+  log('new build found, restarting');
+  setTimeout(() => process.exit(0), 2000);
+});
 
 startRelay();
 client.login(config.token);
