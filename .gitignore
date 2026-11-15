@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+*.db
+*.db-*
+*.log
+logs
+lavalink/*.jar
+lavalink/*/plugins
+lavalink/*/logs
