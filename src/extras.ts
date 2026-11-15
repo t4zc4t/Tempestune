@@ -84,7 +84,7 @@ function containsLine(lyrics: string, line: string) {
 }
 
 // "Justin Bieber - Sorry (Lyrics)" -> artist and title
-function splitTitle(t: string, uploader: string) {
+export function splitTitle(t: string, uploader: string) {
   const clean = t.replace(/\s*[([][^)\]]*(lyrics?|official|audio|video|visuali[sz]er|hd|4k)[^)\]]*[)\]]/gi, '').replace(/\s*\|.*$/, '').trim();
   const m = /^(.+?)\s+[-–—]\s+(.+)$/.exec(clean);
   return m ? { author: m[1].trim(), title: m[2].replace(/\s*\((ft|feat)\.?.*\)$/i, '').trim() } : { author: uploader.replace(/\s*-\s*topic$/i, ''), title: clean };
