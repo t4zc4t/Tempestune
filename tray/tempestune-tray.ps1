@@ -58,10 +58,22 @@ $script:startedAt = $null
 $script:watchUntil = $null
 $script:rollbackTo = $null
 
+# builds the bot first if the source is newer than the last build
+function Build-IfStale {
+  $built = Join-Path $root 'dist\main.js'
+  $newest = Get-ChildItem (Join-Path $root 'src') -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ((Test-Path $built) -and $newest -and $newest.LastWriteTime -le (Get-Item $built).LastWriteTime) { return }
+  Write-Log 'source changed, building'
+  Push-Location $root
+  & npm.cmd run build --silent 2>&1 | ForEach-Object { Write-Log "build: $_" }
+  Pop-Location
+}
+
 function Start-Part($name) {
   $p = $script:procs[$name]
   if ($p -and -not $p.HasExited) { return }
   if ($name -eq 'bot') {
+    Build-IfStale
     $psi = New-Object System.Diagnostics.ProcessStartInfo 'cmd.exe', "/c node --env-file=`"$root\.env`" `"$root\dist\main.js`" 2>> `"$logs\crash.log`""
     $psi.WorkingDirectory = $root
   } else {
