@@ -58,11 +58,34 @@ export async function onCommand(i: ChatInputCommandInteraction, lavalink: Lavali
       });
     }
     if (!player.connected) await player.connect();
-    await player.queue.add(found.tracks);
+
+    // the first song is found right away, so a dead link says so instead of failing silently later
     const first = found.tracks[0];
-    if (!player.playing && !player.paused) await player.play();
+    if (lavalink.utils.isUnresolvedTrack(first)) {
+      const ok = await first.resolve(player).then(() => true, (e: unknown) => {
+        log('first song failed:', e instanceof Error ? e.message : e);
+        return false;
+      });
+      if (!ok) {
+        found.tracks.shift();
+        if (!found.tracks.length) {
+          if (!player.queue.current) await player.destroy().catch(() => {});
+          return i.editReply(say('failed'));
+        }
+      }
+    }
+    const idle = !player.queue.current;
+    await player.queue.add(found.tracks);
+    if (idle) {
+      const started = await player.play().then(() => true, (e: unknown) => {
+        log('play failed:', e instanceof Error ? e.message : e);
+        return false;
+      });
+      if (!started) return i.editReply(say('failed'));
+    }
     if (found.name || found.tracks.length > 1) return i.editReply(`${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
-    return i.editReply(player.queue.current === first ? say('loaded') : `${say('queued')} **${first.info.title}**`);
+    const t = found.tracks[0];
+    return i.editReply(idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}**`);
   }
 
   if (!player?.queue.current) return quiet(i, say('nothing'));
