@@ -80,8 +80,39 @@ interface Live {
 }
 const live = new Map<string, Live>();
 
+// request channel boards: one pinned player message per server that always shows what's on
+const boards = new Map<string, Message>();
+export const setBoard = (guildId: string, message: Message | null) => (message ? boards.set(guildId, message) : boards.delete(guildId));
+
+export function idleBoard() {
+  return new EmbedBuilder()
+    .setColor(SLIME)
+    .setAuthor({ name: 'Tempestune' })
+    .setTitle('Nothing is playing')
+    .setDescription('Type a song name or paste a link in this channel and I will play it.\nJoin a voice channel first.');
+}
+
+async function updateBoard(player: Player | null, guildId: string) {
+  const board = boards.get(guildId);
+  if (!board) return;
+  const playing = player?.queue.current;
+  await board
+    .edit(playing ? { content: '', embeds: [cardEmbed(player!)], components: cardButtons(player!) } : { content: '', embeds: [idleBoard()], components: [] })
+    .catch(() => boards.delete(guildId));
+}
+
 export async function showCard(client: Client, player: Player) {
   await dropCard(player.guildId, true);
+  await updateBoard(player, player.guildId);
+  // with a request channel, the board is the card: no extra message in that channel
+  const board = boards.get(player.guildId);
+  if (board && board.channelId === player.textChannelId) {
+    const timer = setInterval(() => {
+      if (!player.paused) updateBoard(player, player.guildId);
+    }, 15_000);
+    live.set(player.guildId, { message: board, timer });
+    return;
+  }
   const channel = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
   if (!channel?.isSendable()) return;
   const message = await channel.send({ embeds: [cardEmbed(player)], components: cardButtons(player) }).catch((e) => {
@@ -98,18 +129,22 @@ export async function showCard(client: Client, player: Player) {
 }
 
 export async function refreshCard(player: Player) {
+  await updateBoard(player, player.guildId);
   const l = live.get(player.guildId);
+  if (l && boards.get(player.guildId)?.id === l.message.id) return;
   if (l) await l.message.edit({ embeds: [cardEmbed(player)], components: cardButtons(player) }).catch(() => {});
 }
 
 // the old card loses its buttons, or goes away when a new one replaces it
 export async function dropCard(guildId: string, remove = false) {
   const l = live.get(guildId);
+  if (!remove) await updateBoard(null, guildId);
   if (!l) return;
   clearInterval(l.timer);
   live.delete(guildId);
+  if (boards.get(guildId)?.id === l.message.id) return;
   if (remove) await l.message.delete().catch(() => {});
   else await l.message.edit({ components: [] }).catch(() => {});
 }
 
-export const isCard = (guildId: string, messageId: string) => live.get(guildId)?.message.id === messageId;
+export const isCard = (guildId: string, messageId: string) => live.get(guildId)?.message.id === messageId || boards.get(guildId)?.id === messageId;
