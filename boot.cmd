@@ -8,7 +8,18 @@ set "LAVALINK_VERSION=4.2.2"
 if not exist .env (echo .env is missing. Copy .env.example to .env and fill it in. & pause & exit /b 1)
 for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do if not "%%b"=="" set "%%a=%%b"
 
-where java >nul 2>&1 || (echo Java is not installed. Run: winget install EclipseAdoptium.Temurin.25.JDK & pause & exit /b 1)
+rem uses java from PATH if it's there, otherwise a portable one inside lavalink\jre
+set "JAVA=java"
+where java >nul 2>&1 || set "JAVA=%~dp0lavalink\jre\bin\java.exe"
+if not "%JAVA%"=="java" if not exist "%JAVA%" (
+  echo Java not found, downloading a portable Java 25...
+  curl -fL --retry 3 -o lavalink\jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse" || (echo Java download failed & pause & exit /b 1)
+  mkdir lavalink\jre-tmp
+  tar -xf lavalink\jre.zip -C lavalink\jre-tmp || (echo Java unzip failed & pause & exit /b 1)
+  for /d %%d in (lavalink\jre-tmp\*) do move "%%d" lavalink\jre >nul
+  rmdir lavalink\jre-tmp
+  del lavalink\jre.zip
+)
 where npm >nul 2>&1 || (echo Node.js is not installed. See README.md & pause & exit /b 1)
 
 echo [1/5] Checking lavalink...

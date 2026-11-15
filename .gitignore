@@ -8,3 +8,5 @@ logs
 lavalink/*.jar
 lavalink/*/plugins
 lavalink/*/logs
+lavalink/jre
+lavalink/version.txt
