@@ -88,6 +88,14 @@ export async function onCommand(i: ChatInputCommandInteraction, lavalink: Lavali
     return i.editReply(idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}**`);
   }
 
+  // stop works whenever the bot is in voice, even if nothing ever started playing
+  if (i.commandName === 'stop' && player) {
+    const problem = sameVoice(i, player);
+    if (problem) return quiet(i, problem);
+    await dropCard(gid);
+    await player.destroy();
+    return i.reply(say('stopped'));
+  }
   if (!player?.queue.current) return quiet(i, say('nothing'));
   const problem = sameVoice(i, player);
   if (problem) return quiet(i, problem);
