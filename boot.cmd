@@ -1,56 +1,14 @@
 @echo off
-setlocal EnableDelayedExpansion
 title Tempestune
 cd /d "%~dp0"
 
-set "LAVALINK_VERSION=4.2.2"
-
 if not exist .env (echo .env is missing. Copy .env.example to .env and fill it in. & pause & exit /b 1)
-for /f "usebackq eol=# tokens=1,* delims==" %%a in (".env") do if not "%%b"=="" set "%%a=%%b"
-
-rem uses java from PATH if it's there, otherwise a portable one inside lavalink\jre
-set "JAVA=java"
-where java >nul 2>&1 || set "JAVA=%~dp0lavalink\jre\bin\java.exe"
-if not "%JAVA%"=="java" if not exist "%JAVA%" (
-  echo Java not found, downloading a portable Java 25...
-  curl -fL --retry 3 -o lavalink\jre.zip "https://api.adoptium.net/v3/binary/latest/25/ga/windows/x64/jre/hotspot/normal/eclipse" || (echo Java download failed & pause & exit /b 1)
-  mkdir lavalink\jre-tmp
-  tar -xf lavalink\jre.zip -C lavalink\jre-tmp || (echo Java unzip failed & pause & exit /b 1)
-  for /d %%d in (lavalink\jre-tmp\*) do move "%%d" lavalink\jre >nul
-  rmdir lavalink\jre-tmp
-  del lavalink\jre.zip
-)
 where npm >nul 2>&1 || (echo Node.js is not installed. See README.md & pause & exit /b 1)
 
-echo [1/5] Checking lavalink...
-set "have="
-if exist lavalink\version.txt set /p have=<lavalink\version.txt
-if not "!have!"=="%LAVALINK_VERSION%" (
-  echo Downloading Lavalink %LAVALINK_VERSION%...
-  curl -fL --retry 3 -o lavalink\Lavalink.jar https://github.com/lavalink-devs/Lavalink/releases/download/%LAVALINK_VERSION%/Lavalink.jar || (echo Download failed & pause & exit /b 1)
-  > lavalink\version.txt echo %LAVALINK_VERSION%
-)
+echo Getting everything ready (the first run downloads Java, Lavalink, yt-dlp and ffmpeg)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\setup.ps1" || (echo Setup failed, see above. & pause & exit /b 1)
 
-echo [2/5] Getting the bot ready...
-call npm install --no-audit --no-fund --loglevel=error || (echo npm install failed & pause & exit /b 1)
-call npm run build --silent || (echo Build failed & pause & exit /b 1)
-
-echo [3/5] Starting lavalink...
 call "%~dp0stop.cmd"
-start "Tempestune main node" /min cmd /c ""%~dp0lavalink\run.cmd" main"
-if /i "%YOUTUBE%"=="on" start "Tempestune youtube node" /min cmd /c ""%~dp0lavalink\run.cmd" youtube"
-
-echo [4/5] Waiting for the main node...
-for /l %%i in (1,1,90) do (
-  curl -s -o nul -H "Authorization: %LAVALINK_PASSWORD%" http://127.0.0.1:2333/version && goto ready
-  timeout /t 1 /nobreak >nul
-)
-echo The main node didn't start. Check the "Tempestune main node" window.
-pause
-exit /b 1
-
-:ready
-echo [5/5] Starting the bot...
-start "Tempestune bot" /min cmd /c "for /l %%n in () do (node --env-file="%~dp0.env" "%~dp0dist\index.js" & echo bot stopped, starting again in 5 seconds... & timeout /t 5 /nobreak >nul)"
-echo Tempestune is running. Run stop.cmd to stop it.
+start "" wscript.exe "%~dp0tray\tempestune-tray.vbs"
+echo Tempestune is starting. Its icon is in the tray near the clock.
 timeout /t 5 >nul

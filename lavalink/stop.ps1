@@ -1,4 +1,5 @@
-# stops tempestune's lavalink nodes and bot loop, nothing else
+# stops tempestune's lavalink nodes, bot and tray, nothing else
+param([switch]$KeepTray)
 $all = Get-CimInstance Win32_Process
 $kill = @()
 
@@ -7,20 +8,14 @@ foreach ($port in 2333, 2334) {
 }
 
 foreach ($p in $all) {
-  if (-not $p.CommandLine) { continue }
-  if ($p.Name -eq 'cmd.exe' -and ($p.CommandLine -match 'lavalink\\run\.cmd' -or $p.CommandLine -match 'bot stopped, starting again')) { $kill += $p.ProcessId }
-  if ($p.Name -eq 'java.exe' -and $p.CommandLine -match 'Lavalink\.jar') { $kill += $p.ProcessId }
+  $c = $p.CommandLine
+  if (-not $c) { continue }
+  if ($p.Name -eq 'java.exe' -and $c -match 'Lavalink\.jar') { $kill += $p.ProcessId }
+  if ($p.Name -in 'cmd.exe', 'node.exe' -and $c -match 'Tempestune\\dist\\') { $kill += $p.ProcessId }
+  # windows left by older boot scripts
+  if ($p.Name -eq 'cmd.exe' -and ($c -match 'lavalink\\run\.cmd' -or $c -match 'bot stopped, starting again')) { $kill += $p.ProcessId }
+  if (-not $KeepTray -and $p.Name -eq 'powershell.exe' -and $c -match 'tempestune-tray\.ps1') { $kill += $p.ProcessId }
 }
 
-# the run.cmd loop sits above java, take it down too so it can't restart
-foreach ($id in @($kill)) {
-  $parent = $all | Where-Object { $_.ProcessId -eq $id } | Select-Object -First 1
-  if ($parent) {
-    $up = $all | Where-Object { $_.ProcessId -eq $parent.ParentProcessId -and $_.Name -eq 'cmd.exe' } | Select-Object -First 1
-    if ($up -and $up.CommandLine -match 'run\.cmd') { $kill += $up.ProcessId }
-  }
-}
-
-$kill = $kill | Sort-Object -Unique
+$kill = $kill | Where-Object { $_ -ne $PID } | Sort-Object -Unique
 foreach ($id in $kill) { taskkill /T /F /PID $id 2>$null | Out-Null }
-Write-Output "stopped $($kill.Count) process(es)"
