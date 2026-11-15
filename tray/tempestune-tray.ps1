@@ -105,7 +105,10 @@ function Update-Bot([bool]$quiet) {
   $here = (git rev-parse HEAD).Trim()
   $there = (git rev-parse origin/main 2>$null)
   Pop-Location
-  if (-not $there -or $here -eq $there.Trim()) { if (-not $quiet) { Show-Tip 'Already on the newest version.' }; return }
+  # only move forward: a local copy that is ahead of github (testing before a push) is left alone
+  $behind = $false
+  if ($there) { Push-Location $root; git merge-base --is-ancestor HEAD $there.Trim() 2>$null; $behind = $LASTEXITCODE -eq 0; Pop-Location }
+  if (-not $there -or $here -eq $there.Trim() -or -not $behind) { if (-not $quiet) { Show-Tip 'Already on the newest version.' }; return }
   Push-Location $root
   git merge --ff-only --quiet origin/main 2>$null
   $merged = $LASTEXITCODE -eq 0
