@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
@@ -94,9 +94,10 @@ export function relay(url: string): Promise<string> {
   const job = fetchTo(url, key, false)
     // youtube sometimes refuses one player type, the tv one usually still works
     .catch((e) => (isYouTube(url) ? fetchTo(url, key, true) : Promise.reject(e)))
-    .then(() => {
+    .then(async () => {
       const f = cached(key);
       if (!f) throw new Error('download finished but no file was written');
+      await measure(f).catch((e) => log('loudness check failed:', e instanceof Error ? e.message : e));
       trim();
       return local(f);
     })
@@ -132,6 +133,7 @@ function trim() {
     if (total <= limit) break;
     if ([...busy.keys()].some((k) => x.f.startsWith(k))) continue;
     rmSync(cache + x.f, { force: true });
+    rmSync(`${cache}${x.f}.lufs`, { force: true });
     total -= x.s.size;
   }
 }
@@ -180,4 +182,34 @@ export async function listOf(url: string): Promise<{ name?: string; hits: RelayH
   });
   if (!Array.isArray(j.entries)) return { hits: [hit(j)] };
   return { name: j.title, hits: j.entries.filter((e: any) => e.url || e.webpage_url).map(hit) };
+}
+
+// ---------- loudness, so quiet and loud uploads come out at a similar volume (ffmpeg loudnorm, measure only) ----------
+
+const ffmpegExe = existsSync(`${ffmpeg}/${win ? 'ffmpeg.exe' : 'ffmpeg'}`) ? `${ffmpeg}/${win ? 'ffmpeg.exe' : 'ffmpeg'}` : 'ffmpeg';
+
+function measure(file: string) {
+  return new Promise<void>((resolve, reject) => {
+    const p = spawn(ffmpegExe, ['-hide_banner', '-nostats', '-i', cache + file, '-vn', '-af', 'loudnorm=print_format=json', '-f', 'null', '-'], { windowsHide: true });
+    let err = '';
+    const timer = setTimeout(() => p.kill(), 60_000);
+    p.stderr.on('data', (d) => (err += d));
+    p.on('error', reject);
+    p.on('close', () => {
+      clearTimeout(timer);
+      const lufs = /"input_i"\s*:\s*"(-?\d+(?:\.\d+)?)"/.exec(err)?.[1];
+      // -70 or lower means silence, nothing worth adjusting
+      if (lufs && Number(lufs) > -70) writeFileSync(`${cache}${file}.lufs`, lufs);
+      resolve();
+    });
+  });
+}
+
+// volume multiplier to bring a cached file to about -14 LUFS (what most streaming apps use)
+export function gainFor(url?: string): number | null {
+  const name = url?.startsWith(`http://127.0.0.1:${config.relayPort}/`) ? url.split('/').pop() : null;
+  if (!name || !existsSync(`${cache}${name}.lufs`)) return null;
+  const lufs = Number(readFileSync(`${cache}${name}.lufs`, 'utf8'));
+  if (!Number.isFinite(lufs)) return null;
+  return Math.min(1.6, Math.max(0.45, 10 ** ((-14 - lufs) / 20)));
 }
