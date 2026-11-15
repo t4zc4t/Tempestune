@@ -6,7 +6,7 @@ import { dropCard, isCard, showCard } from './card.js';
 import { definitions, onButton, onCommand } from './commands.js';
 import { config } from './config.js';
 import { log } from './log.js';
-import { useManager, warmNext } from './music.js';
+import { fallbackFor, useManager, warmNext, type Requester } from './music.js';
 import { startRelay } from './relay.js';
 import { say } from './sage.js';
 
@@ -49,7 +49,17 @@ lavalink
     warmNext(player);
   })
   .on('trackError', async (player, track, payload) => {
-    log(`track failed: ${track?.info?.title}`, (payload as any)?.exception?.message ?? (payload as any)?.message ?? payload);
+    log(`track failed: ${track?.info?.title}`, String((payload as any)?.exception?.message ?? (payload as any)?.message ?? '').split('\n')[0]);
+    // a youtube song gets one more try on soundcloud, slotted in as the next song
+    const retry = track ? fallbackFor(track, (track.requester as Requester) ?? { id: '', name: '' }) : null;
+    if (retry) {
+      await player.queue.add(retry, 0);
+      // if the queue had already run out, start it again
+      setTimeout(() => {
+        if (!player.playing && !player.paused && player.queue.tracks.length) player.play().catch(() => {});
+      }, 1500);
+      return;
+    }
     const ch = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
     if (ch?.isSendable()) ch.send(say('failed')).catch(() => {});
   })
