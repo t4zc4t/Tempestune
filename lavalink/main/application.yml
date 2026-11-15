@@ -1,0 +1,78 @@
+# main node: everything except youtube
+server:
+  port: 2333
+  address: 127.0.0.1
+
+lavalink:
+  plugins:
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.3"
+      snapshot: false
+  server:
+    password: "${LAVALINK_PASSWORD}"
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: true
+      twitch: false
+      vimeo: false
+      nico: false
+      # needed for jamendo and radio streams, the bot only passes urls it found itself
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: MEDIUM
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    playerUpdateInterval: 1
+    soundcloudSearchEnabled: true
+    youtubeSearchEnabled: false
+    gc-warnings: true
+
+plugins:
+  lavasrc:
+    # spotify and apple links are metadata only, the audio comes from soundcloud
+    providers:
+      - "scsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: true
+      deezer: false
+      youtube: false
+    lyrics-sources:
+      lrcLib: true
+    spotify:
+      countryCode: "IN"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+      resolveArtistsInSearch: false
+      preferPartnerApi: true
+    applemusic:
+      countryCode: "IN"
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+  request:
+    enabled: false
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB
+      max-history: 7
