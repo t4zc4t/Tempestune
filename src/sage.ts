@@ -1,3 +1,5 @@
+import { ic } from './icons.js';
+
 // Tempestune's voice: a calm slime with a very thorough assistant in its head.
 // Kept short, one line per moment, never more than a flavour.
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
@@ -47,4 +49,7 @@ const lines = {
 export type Moment = keyof typeof lines;
 
 export const say = (moment: Moment, vars: Record<string, string | number> = {}) =>
-  pick(lines[moment]).replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''));
+  pick(lines[moment])
+    .replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
+    // the sage gets its own little mark once the icons are uploaded
+    .replace(/^Great Sage:/, () => `${ic('sage')}Great Sage:`);

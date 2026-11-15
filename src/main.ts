@@ -9,6 +9,7 @@ import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './ke
 import { noteHistory, songOfTrack } from './library.js';
 import { normalise, stopLyrics } from './sound.js';
 import { config } from './config.js';
+import { syncIcons } from './icons.js';
 import { log } from './log.js';
 import { fallbackFor, notePlayed, related, useManager, warmNext, type Requester } from './music.js';
 import { startRelay } from './relay.js';
@@ -142,6 +143,7 @@ client.on('guildCreate', register);
 client.once('clientReady', async (c) => {
   await lavalink.init({ id: c.user.id, username: c.user.username });
   for (const g of c.guilds.cache.values()) await register(g);
+  await syncIcons(c);
   // request channel boards and 24/7 servers come back after a restart
   for (const { guild, s } of allSettings()) {
     if (!c.guilds.cache.has(guild)) continue;

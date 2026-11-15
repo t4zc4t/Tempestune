@@ -5,6 +5,7 @@ import {
 import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
 import { cardButtons, cardEmbed, clock, dropCard, idleBoard, refreshCard, setBoard, SLIME } from './card.js';
 import { config } from './config.js';
+import { icon } from './icons.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
 import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist, historyEmbed, playlistEmbed, playlistsEmbed, recent, savePlaylist, songOfTrack, songsOfQueue, toggleFavourite } from './library.js';
@@ -65,10 +66,15 @@ export function queuePage(player: Player, page: number) {
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`tt:q:${page - 1}`).setLabel('Back').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
     new ButtonBuilder().setCustomId(`tt:q:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= pages - 1),
-    new ButtonBuilder().setCustomId('tt:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary).setDisabled(tracks.length < 2),
+    withIcon(new ButtonBuilder().setCustomId('tt:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary).setDisabled(tracks.length < 2), 'shuffle'),
   );
   return { embeds: [embed], components: [row] };
 }
+
+const withIcon = (b: ButtonBuilder, name: string) => {
+  const e = icon(name);
+  return e ? b.setEmoji(e) : b;
+};
 
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 

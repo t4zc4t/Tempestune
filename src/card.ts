@@ -1,5 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, type Client, type Message } from 'discord.js';
 import type { Player, Track } from 'lavalink-client';
+import { icon } from './icons.js';
 import { log } from './log.js';
 
 // the now-playing card: one message per server, edited in place, never reposted by buttons
@@ -52,25 +53,28 @@ export function cardEmbed(player: Player) {
 }
 
 export function cardButtons(player: Player, off = false) {
-  const b = (id: string, label: string, style = ButtonStyle.Secondary) =>
-    new ButtonBuilder().setCustomId(`tt:${id}`).setLabel(label).setStyle(style).setDisabled(off);
+  const b = (id: string, label: string, emoji: string, style = ButtonStyle.Secondary) => {
+    const btn = new ButtonBuilder().setCustomId(`tt:${id}`).setLabel(label).setStyle(style).setDisabled(off);
+    const e = icon(emoji);
+    return e ? btn.setEmoji(e) : btn;
+  };
   const loop = player.repeatMode === 'track' ? 'Loop: song' : player.repeatMode === 'queue' ? 'Loop: queue' : 'Loop: off';
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      b('pause', player.paused ? 'Resume' : 'Pause', ButtonStyle.Primary),
-      b('skip', 'Skip'),
-      b('stop', 'Stop', ButtonStyle.Danger),
-      b('loop', loop),
-      b('queue', 'Queue'),
+      b('pause', player.paused ? 'Resume' : 'Pause', player.paused ? 'play' : 'pause', ButtonStyle.Primary),
+      b('skip', 'Skip', 'skip'),
+      b('stop', 'Stop', 'stop', ButtonStyle.Danger),
+      b('loop', loop, player.repeatMode === 'track' ? 'loopone' : 'loop'),
+      b('queue', 'Queue', 'queue'),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      b('vdown', 'Vol −'),
-      b('vup', 'Vol +'),
-      b('auto', player.get('autoplay') ? 'Autoplay: on' : 'Autoplay: off'),
-      b('lyrics', 'Lyrics'),
-      b('filters', 'Filters'),
+      b('vdown', 'Vol', 'voldown'),
+      b('vup', 'Vol', 'volup'),
+      b('auto', player.get('autoplay') ? 'Autoplay: on' : 'Autoplay: off', 'autoplay'),
+      b('lyrics', 'Lyrics', 'lyrics'),
+      b('filters', 'Filters', 'filters'),
     ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(b('like', 'Like', ButtonStyle.Success)),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(b('like', 'Like', 'like', ButtonStyle.Success)),
   ];
 }
 
