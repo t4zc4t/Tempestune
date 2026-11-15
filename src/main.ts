@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, isCard, showCard } from './card.js';
-import { definitions, onButton, onCommand } from './commands.js';
+import { definitions, onButton, onCommand, onMessage, queuePage } from './commands.js';
 import { config } from './config.js';
 import { log } from './log.js';
 import { fallbackFor, useManager, warmNext, type Requester } from './music.js';
@@ -15,7 +15,7 @@ const nodes: LavalinkNodeOptions[] = [
 ];
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
 const lavalink = new LavalinkManager({
@@ -100,11 +100,22 @@ client.once('clientReady', async (c) => {
   log(`${c.user.tag} is up, youtube ${config.youtube ? 'on' : 'off'}`);
 });
 
+client.on('messageCreate', (m) => {
+  onMessage(m, lavalink).catch((e) => log('text command failed', e));
+});
+
 client.on('interactionCreate', async (i) => {
   try {
     if (i.isChatInputCommand() && i.inGuild()) await onCommand(i, lavalink);
     else if (i.isButton() && i.customId.startsWith('tt:') && i.inGuild()) {
-      if (!isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
+      const id = i.customId;
+      if (id === 'tt:queue') {
+        const player = lavalink.getPlayer(i.guildId);
+        if (!player) return void (await i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral }));
+        return void (await i.reply({ ...queuePage(player, 0), flags: MessageFlags.Ephemeral }));
+      }
+      // old cards lose their buttons, queue pages can be flicked through anywhere
+      if (!id.startsWith('tt:q:') && id !== 'tt:shuffle' && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
       await onButton(i, lavalink);
     }
   } catch (e) {

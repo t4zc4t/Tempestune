@@ -1,141 +1,414 @@
 import {
-  InteractionContextType, MessageFlags, SlashCommandBuilder, type ButtonInteraction, type ChatInputCommandInteraction, type GuildMember,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, SlashCommandBuilder,
+  type ButtonInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
 } from 'discord.js';
-import type { LavalinkManager, Player } from 'lavalink-client';
-import { cardButtons, cardEmbed, dropCard, refreshCard } from './card.js';
+import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
+import { cardButtons, cardEmbed, clock, dropCard, refreshCard, SLIME } from './card.js';
+import { config } from './config.js';
 import { log } from './log.js';
 import { find, pickNode, type Requester } from './music.js';
 import { say } from './sage.js';
 
-export const definitions = [
-  new SlashCommandBuilder().setName('play').setDescription('Play a song or add it to the queue')
-    .addStringOption((o) => o.setName('query').setDescription('Song name or a SoundCloud, Bandcamp, Spotify, Apple Music, Deezer or YouTube link').setRequired(true)),
-  new SlashCommandBuilder().setName('pause').setDescription('Pause the music'),
-  new SlashCommandBuilder().setName('resume').setDescription('Carry on playing'),
-  new SlashCommandBuilder().setName('skip').setDescription('Skip to the next song'),
-  new SlashCommandBuilder().setName('stop').setDescription('Stop, clear the queue and leave'),
-  new SlashCommandBuilder().setName('volume').setDescription('Change the volume')
-    .addIntegerOption((o) => o.setName('level').setDescription('0 to 150').setMinValue(0).setMaxValue(150).setRequired(true)),
-  new SlashCommandBuilder().setName('nowplaying').setDescription('Show what is playing'),
-].map((c) => c.setContexts(InteractionContextType.Guild).toJSON());
+// one set of commands for both slash and the text prefix
 
-const quiet = (i: ChatInputCommandInteraction | ButtonInteraction, content: string) =>
-  i.replied || i.deferred ? i.followUp({ content, flags: MessageFlags.Ephemeral }) : i.reply({ content, flags: MessageFlags.Ephemeral });
+type Payload = { content?: string; embeds?: EmbedBuilder[]; components?: ActionRowBuilder<ButtonBuilder>[] };
 
-// same voice channel as the bot, or nothing
-function sameVoice(i: ChatInputCommandInteraction | ButtonInteraction, player?: Player) {
-  const vc = (i.member as GuildMember | null)?.voice?.channelId;
+export interface Ctx {
+  guildId: string;
+  channelId: string;
+  member: GuildMember;
+  user: { id: string; username: string };
+  str(name: string): string | null;
+  int(name: string): number | null;
+  // first answer; quiet ones are only seen by the person (slash) or vanish after a bit (prefix)
+  reply(p: string | Payload, quiet?: boolean): Promise<unknown>;
+  // for slow commands: shows the bot is working, then the answer replaces it
+  wait(note?: string): Promise<void>;
+}
+
+interface Command {
+  name: string;
+  aliases: string[];
+  about: string;
+  // how prefix words map to options, in order
+  args?: { name: string; kind: 'text' | 'int'; about: string; required?: boolean; rest?: boolean }[];
+  needsPlayer?: boolean;
+  run(c: Ctx, lavalink: LavalinkManager, player: Player | undefined): Promise<unknown>;
+}
+
+const pageSize = 10;
+
+export function queuePage(player: Player, page: number) {
+  const tracks = player.queue.tracks;
+  const pages = Math.max(1, Math.ceil(tracks.length / pageSize));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const now = player.queue.current;
+  const lines = tracks.slice(page * pageSize, page * pageSize + pageSize).map((t, i) => {
+    const n = page * pageSize + i + 1;
+    const len = t.info.duration ? ` \`${clock(t.info.duration)}\`` : '';
+    return `\`${String(n).padStart(2, ' ')}.\` ${cut(t.info.title, 60)}${len}`;
+  });
+  const total = tracks.reduce((ms, t) => ms + (t.info.duration ?? 0), 0);
+  const loop = player.repeatMode === 'off' ? '' : ` · looping ${player.repeatMode}`;
+  const embed = new EmbedBuilder()
+    .setColor(SLIME)
+    .setAuthor({ name: 'Queue' })
+    .setDescription(
+      `**Now:** ${now ? cut(now.info.title, 80) : 'nothing'}\n\n${lines.join('\n') || 'The queue is empty. Add songs with play.'}`,
+    )
+    .setFooter({ text: `${tracks.length} songs · ${clock(total)} total${loop} · page ${page + 1}/${pages}` });
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId(`tt:q:${page - 1}`).setLabel('Back').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`tt:q:${page + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= pages - 1),
+    new ButtonBuilder().setCustomId('tt:shuffle').setLabel('Shuffle').setStyle(ButtonStyle.Secondary).setDisabled(tracks.length < 2),
+  );
+  return { embeds: [embed], components: [row] };
+}
+
+const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+// "1:30", "90", "1:02:03" -> ms
+const toMs = (s: string) => {
+  const parts = s.trim().split(':').map(Number);
+  if (!parts.length || parts.some((n) => Number.isNaN(n))) return null;
+  return parts.reduce((acc, n) => acc * 60 + n, 0) * 1000;
+};
+
+function sameVoice(c: Ctx, player?: Player) {
+  const vc = c.member.voice?.channelId;
   if (!vc) return say('noVoice');
   if (player?.voiceChannelId && player.voiceChannelId !== vc) return say('otherVoice');
   return null;
 }
 
-export async function onCommand(i: ChatInputCommandInteraction, lavalink: LavalinkManager) {
-  const gid = i.guildId!;
-  let player = lavalink.getPlayer(gid);
-
-  if (i.commandName === 'play') {
-    const problem = sameVoice(i, player);
-    if (problem) return quiet(i, problem);
-    if (!lavalink.nodeManager.nodes.get('main')?.connected) return quiet(i, say('nodeDown'));
-    await i.deferReply();
-    const requester: Requester = { id: i.user.id, name: i.user.username };
-    const found = await find(i.options.getString('query', true), requester).catch((e) => {
-      log('play lookup failed:', e instanceof Error ? e.message : e);
-      return e instanceof Error && e.message === 'youtube is off' ? 'youtube' : null;
-    });
-    if (found === 'youtube') return i.editReply('YouTube is switched off on this bot right now.');
-    if (!found?.tracks.length) return i.editReply(say('notFound'));
-
-    if (!player) {
-      player = lavalink.createPlayer({
-        guildId: gid,
-        voiceChannelId: (i.member as GuildMember).voice.channelId!,
-        textChannelId: i.channelId,
-        selfDeaf: true,
-        volume: 80,
-        node: pickNode(),
+const commands: Command[] = [
+  {
+    name: 'play', aliases: ['p'], about: 'Play a song, or add it to the queue',
+    args: [{ name: 'query', kind: 'text', about: 'Song name, or a YouTube, Spotify, SoundCloud, Apple Music or Deezer link', required: true, rest: true }],
+    async run(c, lavalink, player) {
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      if (!lavalink.nodeManager.nodes.get('main')?.connected) return c.reply(say('nodeDown'), true);
+      const query = c.str('query');
+      if (!query) return c.reply('What should I play? Give me a song name or a link.', true);
+      await c.wait(say('searching'));
+      const requester: Requester = { id: c.user.id, name: c.user.username };
+      const found = await find(query, requester).catch((e) => {
+        log('play lookup failed:', e instanceof Error ? e.message : e);
+        return e instanceof Error && e.message === 'youtube is off' ? 'youtube' : null;
       });
-    }
-    if (!player.connected) await player.connect();
+      if (found === 'youtube') return c.reply('YouTube is switched off on this bot right now.');
+      if (!found?.tracks.length) return c.reply(say('notFound'));
 
-    // the first song is found right away, so a dead link says so instead of failing silently later
-    const first = found.tracks[0];
-    if (lavalink.utils.isUnresolvedTrack(first)) {
-      const ok = await first.resolve(player).then(() => true, (e: unknown) => {
-        log('first song failed:', e instanceof Error ? e.message : e);
-        return false;
-      });
-      if (!ok) {
-        found.tracks.shift();
-        if (!found.tracks.length) {
-          if (!player.queue.current) await player.destroy().catch(() => {});
-          return i.editReply(say('failed'));
+      if (!player) {
+        player = lavalink.createPlayer({
+          guildId: c.guildId, voiceChannelId: c.member.voice.channelId!, textChannelId: c.channelId, selfDeaf: true, volume: 80, node: pickNode(),
+        });
+      }
+      if (!player.connected) await player.connect();
+
+      // the first song is fetched right away, so a dead one says so instead of failing quietly later
+      const first = found.tracks[0];
+      if (lavalink.utils.isUnresolvedTrack(first)) {
+        const ok = await first.resolve(player).then(() => true, (e: unknown) => {
+          log('first song failed:', e instanceof Error ? e.message.split('\n')[0] : e);
+          return false;
+        });
+        if (!ok) {
+          found.tracks.shift();
+          if (!found.tracks.length) {
+            if (!player.queue.current) await player.destroy().catch(() => {});
+            return c.reply(say('failed'));
+          }
         }
       }
-    }
-    const idle = !player.queue.current;
-    await player.queue.add(found.tracks);
-    if (idle) {
-      const started = await player.play().then(() => true, (e: unknown) => {
-        log('play failed:', e instanceof Error ? e.message : e);
-        return false;
-      });
-      if (!started) return i.editReply(say('failed'));
-    }
-    if (found.name || found.tracks.length > 1) return i.editReply(`${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
-    const t = found.tracks[0];
-    const note = found.notOriginal ? `\n-# ${say('notOriginal')}` : '';
-    return i.editReply((idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}**`) + note);
-  }
-
-  // stop works whenever the bot is in voice, even if nothing ever started playing
-  if (i.commandName === 'stop' && player) {
-    const problem = sameVoice(i, player);
-    if (problem) return quiet(i, problem);
-    await dropCard(gid);
-    await player.destroy();
-    return i.reply(say('stopped'));
-  }
-  if (!player?.queue.current) return quiet(i, say('nothing'));
-  const problem = sameVoice(i, player);
-  if (problem) return quiet(i, problem);
-
-  switch (i.commandName) {
-    case 'pause':
-      await player.pause();
-      await refreshCard(player);
-      return quiet(i, say('paused'));
-    case 'resume':
-      await player.resume();
-      await refreshCard(player);
-      return quiet(i, say('resumed'));
-    case 'skip':
-      await player.skip(0, false);
-      return quiet(i, say('skipped'));
-    case 'stop':
-      await dropCard(gid);
+      const idle = !player.queue.current;
+      await player.queue.add(found.tracks);
+      if (idle) {
+        const started = await player.play().then(() => true, (e: unknown) => {
+          log('play failed:', e instanceof Error ? e.message : e);
+          return false;
+        });
+        if (!started) return c.reply(say('failed'));
+      }
+      if (found.name || found.tracks.length > 1) return c.reply(`${say('predator', { n: found.tracks.length })}${found.name ? ` (${found.name})` : ''}`);
+      const t = found.tracks[0];
+      const note = found.notOriginal ? `\n-# ${say('notOriginal')}` : '';
+      return c.reply((idle ? `${say('loaded')} **${t.info.title}**` : `${say('queued')} **${t.info.title}** (#${player.queue.tracks.length})`) + note);
+    },
+  },
+  {
+    name: 'pause', aliases: [], about: 'Pause the music', needsPlayer: true,
+    async run(c, _l, player) {
+      await player!.pause();
+      await refreshCard(player!);
+      return c.reply(say('paused'), true);
+    },
+  },
+  {
+    name: 'resume', aliases: ['unpause', 'r'], about: 'Carry on playing', needsPlayer: true,
+    async run(c, _l, player) {
+      await player!.resume();
+      await refreshCard(player!);
+      return c.reply(say('resumed'), true);
+    },
+  },
+  {
+    name: 'skip', aliases: ['s', 'next', 'n'], about: 'Skip to the next song', needsPlayer: true,
+    async run(c, _l, player) {
+      await player!.skip(0, false);
+      return c.reply(say('skipped'), true);
+    },
+  },
+  {
+    name: 'skipto', aliases: ['st', 'jump'], about: 'Jump to a song in the queue', needsPlayer: true,
+    args: [{ name: 'position', kind: 'int', about: 'Its number in the queue', required: true }],
+    async run(c, _l, player) {
+      const n = c.int('position');
+      if (!n || n < 1 || n > player!.queue.tracks.length) return c.reply(`Pick a number from 1 to ${player!.queue.tracks.length}.`, true);
+      await player!.skip(n, false);
+      return c.reply(`Jumped to #${n}.`, true);
+    },
+  },
+  {
+    name: 'stop', aliases: ['leave', 'dc', 'disconnect'], about: 'Stop, clear the queue and leave',
+    async run(c, _l, player) {
+      if (!player) return c.reply(say('nothing'), true);
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      await dropCard(c.guildId);
       await player.destroy();
-      return i.reply(say('stopped'));
-    case 'volume': {
-      await player.setVolume(i.options.getInteger('level', true));
-      await refreshCard(player);
-      return quiet(i, `Volume set to ${player.volume}%.`);
-    }
-    case 'nowplaying':
-      return i.reply({ embeds: [cardEmbed(player)] });
+      return c.reply(say('stopped'));
+    },
+  },
+  {
+    name: 'volume', aliases: ['vol', 'v'], about: 'Change the volume', needsPlayer: true,
+    args: [{ name: 'level', kind: 'int', about: '0 to 150', required: true }],
+    async run(c, _l, player) {
+      const v = c.int('level');
+      if (v === null || v < 0 || v > 150) return c.reply(`Volume is ${player!.volume}%. Give me 0 to 150 to change it.`, true);
+      await player!.setVolume(v);
+      await refreshCard(player!);
+      return c.reply(`Volume set to ${v}%.`, true);
+    },
+  },
+  {
+    name: 'nowplaying', aliases: ['np', 'now'], about: 'Show what is playing', needsPlayer: true,
+    async run(c, _l, player) {
+      return c.reply({ embeds: [cardEmbed(player!)] });
+    },
+  },
+  {
+    name: 'queue', aliases: ['q', 'list'], about: 'Show the queue',
+    args: [{ name: 'page', kind: 'int', about: 'Page number' }],
+    async run(c, _l, player) {
+      if (!player?.queue.current && !player?.queue.tracks.length) return c.reply('The queue is empty. Add songs with play.', true);
+      return c.reply(queuePage(player, (c.int('page') ?? 1) - 1));
+    },
+  },
+  {
+    name: 'remove', aliases: ['rm', 'del'], about: 'Remove a song from the queue', needsPlayer: true,
+    args: [{ name: 'position', kind: 'int', about: 'Its number in the queue', required: true }],
+    async run(c, _l, player) {
+      const n = c.int('position');
+      const q = player!.queue;
+      if (!n || n < 1 || n > q.tracks.length) return c.reply(`Pick a number from 1 to ${q.tracks.length}.`, true);
+      const gone = q.tracks[n - 1];
+      await q.splice(n - 1, 1);
+      return c.reply(`Removed **${gone?.info.title ?? `#${n}`}**.`);
+    },
+  },
+  {
+    name: 'move', aliases: ['mv'], about: 'Move a song to another spot in the queue', needsPlayer: true,
+    args: [
+      { name: 'from', kind: 'int', about: 'Its number now', required: true },
+      { name: 'to', kind: 'int', about: 'Where it should go', required: true },
+    ],
+    async run(c, _l, player) {
+      const q = player!.queue;
+      const from = c.int('from');
+      const to = c.int('to');
+      const ok = (n: number | null) => n !== null && n >= 1 && n <= q.tracks.length;
+      if (!ok(from) || !ok(to)) return c.reply(`Both numbers need to be from 1 to ${q.tracks.length}.`, true);
+      const t = q.tracks[from! - 1];
+      await q.splice(from! - 1, 1);
+      await q.splice(to! - 1, 0, t);
+      return c.reply(`Moved **${t.info.title}** to #${to}.`);
+    },
+  },
+  {
+    name: 'clear', aliases: ['cl'], about: 'Clear the queue (keeps the current song)', needsPlayer: true,
+    async run(c, _l, player) {
+      const n = player!.queue.tracks.length;
+      await player!.queue.splice(0, n);
+      await refreshCard(player!);
+      return c.reply(`Cleared ${n} songs from the queue.`);
+    },
+  },
+  {
+    name: 'shuffle', aliases: ['sh', 'mix'], about: 'Shuffle the queue', needsPlayer: true,
+    async run(c, _l, player) {
+      if (player!.queue.tracks.length < 2) return c.reply('Need at least two songs in the queue to shuffle.', true);
+      await player!.queue.shuffle();
+      await refreshCard(player!);
+      return c.reply('Shuffled the queue.');
+    },
+  },
+  {
+    name: 'loop', aliases: ['l', 'repeat'], about: 'Loop the song or the queue', needsPlayer: true,
+    args: [{ name: 'mode', kind: 'text', about: 'off, song or queue (leave empty to cycle)' }],
+    async run(c, _l, player) {
+      const asked = (c.str('mode') ?? '').toLowerCase();
+      const order: RepeatMode[] = ['off', 'track', 'queue'];
+      const mode: RepeatMode = /^(song|track|one|this)$/.test(asked) ? 'track' : /^(queue|all)$/.test(asked) ? 'queue' : /^(off|none|stop)$/.test(asked) ? 'off'
+        : order[(order.indexOf(player!.repeatMode) + 1) % 3];
+      await player!.setRepeatMode(mode);
+      await refreshCard(player!);
+      return c.reply(mode === 'off' ? 'Loop is off.' : mode === 'track' ? 'Looping this song.' : 'Looping the whole queue.');
+    },
+  },
+  {
+    name: 'seek', aliases: ['jumpto'], about: 'Jump to a time in the song', needsPlayer: true,
+    args: [{ name: 'time', kind: 'text', about: 'Like 1:30 or 90', required: true }],
+    async run(c, _l, player) {
+      const ms = toMs(c.str('time') ?? '');
+      const len = player!.queue.current?.info.duration ?? 0;
+      if (ms === null || ms < 0 || (len && ms >= len)) return c.reply(`Give me a time inside the song, like 1:30${len ? ` (it is ${clock(len)} long)` : ''}.`, true);
+      await player!.seek(ms);
+      await refreshCard(player!);
+      return c.reply(`Jumped to ${clock(ms)}.`, true);
+    },
+  },
+  {
+    name: 'help', aliases: ['h', 'commands'], about: 'All commands',
+    async run(c) {
+      const lines = commands.filter((x) => x.name !== 'help').map((x) => {
+        const args = (x.args ?? []).map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(' ');
+        const short = x.aliases.length ? ` · ${x.aliases.map((a) => `\`${a}\``).join(' ')}` : '';
+        return `\`${x.name}${args ? ' ' + args : ''}\`${short}\n-# ${x.about}`;
+      });
+      const e = new EmbedBuilder()
+        .setColor(SLIME)
+        .setAuthor({ name: 'Tempestune' })
+        .setDescription(`Use slash commands, or type **\`${config.prefix} \`** before any command, like \`${config.prefix} p faded\`.\n\n${lines.join('\n')}`);
+      return c.reply({ embeds: [e] });
+    },
+  },
+];
+
+const byName = new Map<string, Command>();
+for (const cmd of commands) for (const n of [cmd.name, ...cmd.aliases]) byName.set(n, cmd);
+
+export const definitions = commands.map((cmd) => {
+  const b = new SlashCommandBuilder().setName(cmd.name).setDescription(cmd.about).setContexts(InteractionContextType.Guild);
+  for (const a of cmd.args ?? []) {
+    if (a.kind === 'int') b.addIntegerOption((o) => o.setName(a.name).setDescription(a.about).setRequired(!!a.required));
+    else b.addStringOption((o) => o.setName(a.name).setDescription(a.about).setRequired(!!a.required));
   }
+  return b.toJSON();
+});
+
+async function dispatch(cmd: Command, c: Ctx, lavalink: LavalinkManager) {
+  const player = lavalink.getPlayer(c.guildId);
+  if (cmd.needsPlayer) {
+    if (!player?.queue.current) return c.reply(say('nothing'), true);
+    const problem = sameVoice(c, player);
+    if (problem) return c.reply(problem, true);
+  }
+  return cmd.run(c, lavalink, player);
 }
+
+// ---------- slash ----------
+
+export async function onCommand(i: ChatInputCommandInteraction, lavalink: LavalinkManager) {
+  const cmd = byName.get(i.commandName);
+  if (!cmd) return;
+  const c: Ctx = {
+    guildId: i.guildId!,
+    channelId: i.channelId,
+    member: i.member as GuildMember,
+    user: i.user,
+    str: (n) => i.options.getString(n),
+    int: (n) => i.options.getInteger(n),
+    async reply(p, quiet) {
+      const body = typeof p === 'string' ? { content: p } : p;
+      if (i.deferred || i.replied) await i.editReply(body);
+      else await i.reply(quiet ? { ...body, flags: MessageFlags.Ephemeral } : body);
+    },
+    async wait() {
+      if (!i.deferred && !i.replied) await i.deferReply();
+    },
+  };
+  return dispatch(cmd, c, lavalink);
+}
+
+// ---------- text prefix ----------
+
+export async function onMessage(m: Message, lavalink: LavalinkManager) {
+  if (m.author.bot || !m.inGuild() || !m.member) return;
+  const content = m.content.trim();
+  const mention = new RegExp(`^<@!?${m.client.user.id}>\\s*`);
+  let body: string | null = null;
+  if (mention.test(content)) body = content.replace(mention, '');
+  else if (content.toLowerCase().startsWith(config.prefix.toLowerCase() + ' ')) body = content.slice(config.prefix.length + 1);
+  if (body === null) return;
+  const [word = '', ...rest] = body.trim().split(/\s+/);
+  const cmd = byName.get(word.toLowerCase()) ?? (word ? undefined : byName.get('help'));
+  if (!cmd) return;
+
+  // prefix words become options in order, the last text one takes the rest of the line
+  const values = new Map<string, string>();
+  const specs = cmd.args ?? [];
+  specs.forEach((a, idx) => {
+    const v = a.rest || idx === specs.length - 1 && a.kind === 'text' ? rest.slice(idx).join(' ') : rest[idx];
+    if (v) values.set(a.name, v);
+  });
+
+  let sent: Message | null = null;
+  const c: Ctx = {
+    guildId: m.guildId,
+    channelId: m.channelId,
+    member: m.member,
+    user: m.author,
+    str: (n) => values.get(n) ?? null,
+    int: (n) => (values.has(n) && /^-?\d+$/.test(values.get(n)!) ? Number(values.get(n)) : null),
+    async reply(p, quiet) {
+      const payload = typeof p === 'string' ? { content: p } : p;
+      if (sent) await sent.edit({ content: payload.content ?? '', embeds: payload.embeds ?? [], components: payload.components ?? [] });
+      else sent = await m.reply({ ...payload, allowedMentions: { repliedUser: false } });
+      // short notices tidy themselves away in busy channels
+      if (quiet && sent) setTimeout(() => sent?.delete().catch(() => {}), 15_000);
+    },
+    async wait(note) {
+      if (!sent) sent = await m.reply({ content: note ?? '…', allowedMentions: { repliedUser: false } });
+    },
+  };
+  await dispatch(cmd, c, lavalink);
+}
+
+// ---------- buttons ----------
 
 export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) {
   const player = lavalink.getPlayer(i.guildId!);
-  if (!player?.queue.current) return i.update({ components: [] });
-  const problem = sameVoice(i, player);
-  if (problem) return quiet(i, problem);
   const what = i.customId.slice(3);
+  if (what.startsWith('q:')) {
+    if (!player) return i.update({ components: [] });
+    return i.update(queuePage(player, Number(what.slice(2))));
+  }
+  if (!player?.queue.current) return i.update({ components: [] });
+  const vc = (i.member as GuildMember | null)?.voice?.channelId;
+  if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+  if (what === 'shuffle') {
+    await player.queue.shuffle();
+    return i.update(queuePage(player, 0));
+  }
   if (what === 'pause') player.paused ? await player.resume() : await player.pause();
   if (what === 'vdown') await player.setVolume(Math.max(0, player.volume - 10));
   if (what === 'vup') await player.setVolume(Math.min(150, player.volume + 10));
+  if (what === 'loop') {
+    const order: RepeatMode[] = ['off', 'track', 'queue'];
+    await player.setRepeatMode(order[(order.indexOf(player.repeatMode) + 1) % 3]);
+  }
   if (what === 'skip') {
     await i.deferUpdate();
     await player.skip(0, false);
