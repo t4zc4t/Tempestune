@@ -13,6 +13,7 @@ export interface Want extends SongInfo {
   how: 'relay' | 'youtube' | 'find';
   source: string;
   uri?: string;
+  noYoutube?: boolean; // set after youtube already failed for this song
 }
 
 let manager: LavalinkManager;
@@ -37,17 +38,17 @@ const nearest = <T>(items: T[], len: (x: T) => number, want?: number) =>
 async function findAudio(want: Want, player: Player, requester: Requester): Promise<string> {
   if (want.how === 'relay' && want.uri) return (await loadOne(player.node, await relay(want.uri), requester)).encoded!;
   if (want.how === 'youtube' && want.uri && player.node.id === 'youtube') return (await loadOne(player.node, want.uri, requester)).encoded!;
-  // metadata only (spotify, apple, deezer) or youtube while it's off: search by name
+  // metadata only (spotify, apple, deezer) or a youtube song that failed: soundcloud first, it is the reliable one
   const q = `${want.author} ${want.title}`.trim();
-  if (player.node.id === 'youtube') {
+  const hits = await searchSoundCloud(q, 8).catch(() => []);
+  const hit = nearest(hits, (h) => h.duration, want.duration);
+  if (hit) return (await loadOne(player.node, await relay(hit.url), requester)).encoded!;
+  if (player.node.id === 'youtube' && !want.noYoutube) {
     const res = await player.node.search({ query: q, source: 'ytmsearch' }, requester).catch(() => null);
     const best = nearest(res?.tracks ?? [], (t) => t.info.duration, want.duration);
     if (best?.encoded) return best.encoded;
   }
-  const hits = await searchSoundCloud(q, 8);
-  const hit = nearest(hits, (h) => h.duration, want.duration);
-  if (!hit) throw new Error(`no audio found for ${q}`);
-  return (await loadOne(player.node, await relay(hit.url), requester)).encoded!;
+  throw new Error(`no audio found for ${q}`);
 }
 
 export function queued(want: Want, requester: Requester): UnresolvedTrack {
@@ -107,13 +108,18 @@ export async function find(input: string, requester: Requester): Promise<Found> 
   }
   if (isUrl) throw new Error('that link is not a supported source');
 
-  // plain words: youtube music when it's on, soundcloud otherwise
-  if (youtubeUp()) {
-    const res = await node('youtube')!.search({ query: text, source: 'ytmsearch' }, requester).catch(() => null);
-    if (res?.tracks?.length) return { tracks: [res.tracks[0]] };
-  }
+  // plain words: soundcloud, since youtube keeps asking for a login
   const hits = await searchSoundCloud(text, 5);
   return { tracks: hits.slice(0, 1).map((h) => queued(fromHit(h, 'soundcloud'), requester)) };
+}
+
+// when youtube refuses a song, look for the same song on soundcloud instead
+export function fallbackFor(track: Track | UnresolvedTrack, requester: Requester): UnresolvedTrack | null {
+  const want = track.userData?.want as unknown as Want | undefined;
+  if (want?.noYoutube) return null; // already tried once
+  const fromYoutube = track.info.sourceName === 'youtube' || want?.how === 'youtube' || (want?.how === 'find' && !want?.noYoutube);
+  if (!fromYoutube || !track.info.title) return null;
+  return queued({ title: track.info.title, author: track.info.author ?? '', duration: track.info.duration, artwork: track.info.artworkUrl ?? undefined, link: track.info.uri ?? undefined, how: 'find', source: want?.source ?? 'youtube', noYoutube: true }, requester);
 }
 
 // fetch the next relay track early so there's no gap
