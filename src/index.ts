@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
+import { log } from './log.js';
 
 const env = (key: string) => {
   const v = process.env[key];
@@ -29,17 +30,18 @@ const lavalink = new LavalinkManager({
 });
 
 lavalink.nodeManager
-  .on('connect', (node) => console.log(`node ${node.id} connected`))
-  .on('disconnect', (node, reason) => console.log(`node ${node.id} dropped (${reason.reason ?? reason.code})`))
-  .on('error', (node, error) => console.log(`node ${node.id} error: ${error.message}`));
+  .on('connect', (node) => log(`node ${node.id} connected`))
+  .on('disconnect', (node, reason) => log(`node ${node.id} dropped (${reason.reason ?? reason.code})`))
+  .on('error', (node, error) => log(`node ${node.id} error: ${error.message}`));
 
 client.on('raw', (d) => lavalink.sendRawData(d));
 
 client.once('clientReady', async (c) => {
   await lavalink.init({ id: c.user.id, username: c.user.username });
-  console.log(`${c.user.tag} is up, youtube ${youtube ? 'on' : 'off'}`);
+  log(`${c.user.tag} is up, youtube ${youtube ? 'on' : 'off'}`);
 });
 
-process.on('unhandledRejection', (e) => console.error('unhandled', e));
+process.on('unhandledRejection', (e) => log('unhandled', e));
+client.on('error', (e) => log('discord error', e));
 
 client.login(env('DISCORD_TOKEN'));
