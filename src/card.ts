@@ -44,7 +44,7 @@ export function cardEmbed(player: Player) {
       { name: 'Volume', value: `${player.volume}%`, inline: true },
       { name: 'Up next', value: next ? cut(next.info.title, 60) : 'Nothing yet', inline: true },
     )
-    .setFooter({ text: `${source} · ${player.queue.tracks.length} in queue` });
+    .setFooter({ text: `${source} · ${player.queue.tracks.length} in queue${player.repeatMode === 'off' ? '' : ` · looping ${player.repeatMode === 'track' ? 'song' : 'queue'}`}` });
   const link = t.info.uri && /^https?:\/\//.test(t.info.uri) && !t.info.uri.includes('127.0.0.1') ? t.info.uri : null;
   if (link) e.setURL(link);
   if (t.info.artworkUrl) e.setThumbnail(t.info.artworkUrl);
@@ -54,14 +54,16 @@ export function cardEmbed(player: Player) {
 export function cardButtons(player: Player, off = false) {
   const b = (id: string, label: string, style = ButtonStyle.Secondary) =>
     new ButtonBuilder().setCustomId(`tt:${id}`).setLabel(label).setStyle(style).setDisabled(off);
+  const loop = player.repeatMode === 'track' ? 'Loop: song' : player.repeatMode === 'queue' ? 'Loop: queue' : 'Loop: off';
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       b('pause', player.paused ? 'Resume' : 'Pause', ButtonStyle.Primary),
       b('skip', 'Skip'),
       b('stop', 'Stop', ButtonStyle.Danger),
-      b('vdown', 'Vol −'),
-      b('vup', 'Vol +'),
+      b('loop', loop),
+      b('queue', 'Queue'),
     ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(b('vdown', 'Vol −'), b('vup', 'Vol +')),
   ];
 }
 
