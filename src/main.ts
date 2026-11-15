@@ -13,9 +13,6 @@ import { say } from './sage.js';
 const nodes: LavalinkNodeOptions[] = [
   { id: 'main', host: '127.0.0.1', port: 2333, authorization: config.password, retryAmount: Infinity, retryDelay: 5000 },
 ];
-if (config.youtube) {
-  nodes.push({ id: 'youtube', host: '127.0.0.1', port: 2334, authorization: config.password, retryAmount: Infinity, retryDelay: 15000 });
-}
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -26,8 +23,6 @@ const lavalink = new LavalinkManager({
   sendToShard: (guildId, payload) => client.guilds.cache.get(guildId)?.shard?.send(payload),
   autoSkip: true,
   autoSkipOnResolveError: true,
-  // if the youtube node falls over, its players carry on from the main node
-  autoMove: true,
   catchLifeCycleRejections: true,
   playerOptions: {
     defaultSearchPlatform: 'scsearch',
@@ -125,7 +120,7 @@ client.on('interactionCreate', async (i) => {
 const alive = fileURLToPath(new URL('../logs/.alive', import.meta.url));
 setInterval(() => {
   const n = (id: string) => lavalink.nodeManager.nodes.get(id)?.connected ?? null;
-  const beat = { t: client.isReady() ? Date.now() : 0, main: n('main'), youtube: config.youtube ? n('youtube') : null, players: lavalink.players.size };
+  const beat = { t: client.isReady() ? Date.now() : 0, main: n('main'), youtube: config.youtube, players: lavalink.players.size };
   try {
     writeFileSync(alive, JSON.stringify(beat));
   } catch {

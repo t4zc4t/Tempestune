@@ -33,7 +33,6 @@ function Read-Env {
   $vars
 }
 $envVars = Read-Env
-function YouTube-On { ([string]$envVars['YOUTUBE']).ToLower() -eq 'on' }
 
 $java = (Get-Command java -ErrorAction SilentlyContinue).Source
 if (-not $java) { $java = Join-Path $ll 'jre\bin\java.exe' }
@@ -86,7 +85,7 @@ function Start-Part($name) {
   if (-not $script:startedAt) { $script:startedAt = Get-Date }
 }
 
-function Parts { if (YouTube-On) { 'main', 'youtube', 'bot' } else { 'main', 'bot' } }
+function Parts { 'main', 'bot' }
 
 function Start-All { foreach ($n in Parts) { Start-Part $n }; Write-Log 'started' }
 
@@ -223,7 +222,7 @@ $timer.add_Tick({
   if (Test-Path $aliveFile) { try { $beat = Get-Content $aliveFile -Raw | ConvertFrom-Json } catch { } }
   $fresh = $beat -and $beat.t -gt 0 -and ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$beat.t) -lt 45000
   $up = { param($v) if ($v -eq $true) { 'up' } elseif ($v -eq $false) { 'down' } else { 'off' } }
-  if ($beat) { $nodesLine.Text = "Main node: $(& $up $beat.main) - YouTube node: $(& $up $beat.youtube)" }
+  if ($beat) { $nodesLine.Text = "Lavalink: $(& $up $beat.main) - YouTube: $(if ($beat.youtube) { 'on' } else { 'off' })" }
 
   if (-not $settings.botOn) { $tray.Icon = $icons.off; $status.Text = 'Tempestune is off'; $tray.Text = 'Tempestune - off'; $nodesLine.Text = 'Nodes: off' }
   elseif ($fresh -and $beat.main -eq $true) {
