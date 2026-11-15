@@ -50,7 +50,9 @@ export async function readSpotify(url: string): Promise<LinkResult> {
     artwork: art,
     link: t.uri ? `https://open.spotify.com/track/${String(t.uri).split(':').pop()}` : undefined,
   }));
-  return { name: e.title ?? e.name, songs };
+  // the embed page only lists the first 100 songs of a playlist
+  const name = e.title ?? e.name;
+  return { name: songs.length >= 100 && kind === 'playlist' ? `${name}, first 100 songs` : name, songs };
 }
 
 // ---------- deezer: open api, no key ----------
