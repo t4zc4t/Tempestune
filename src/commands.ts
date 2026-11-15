@@ -1,13 +1,14 @@
 import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
-  type AutocompleteInteraction, type ButtonInteraction, type StringSelectMenuInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
+  type AutocompleteInteraction, type ButtonInteraction, type ChannelSelectMenuInteraction, type RoleSelectMenuInteraction, type StringSelectMenuInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
 } from 'discord.js';
 import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
-import { cardButtons, cardEmbed, clock, dropCard, refreshCard, SLIME } from './card.js';
+import { cardButtons, cardEmbed, clock, dropCard, idleBoard, refreshCard, setBoard, SLIME } from './card.js';
 import { config } from './config.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
 import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist, historyEmbed, playlistEmbed, playlistsEmbed, recent, savePlaylist, songOfTrack, songsOfQueue, toggleFavourite } from './library.js';
+import { canControl, isManager, listeners, settingsOf, settingsPanel, updateSettings } from './settings.js';
 import { applyPreset, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics } from './sound.js';
 import { find, fromSong, fromWant, pickNode, searchAll, stationWant, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
@@ -36,6 +37,7 @@ interface Command {
   // how prefix words map to options, in order
   args?: { name: string; kind: 'text' | 'int'; about: string; required?: boolean; rest?: boolean; choices?: string[]; auto?: boolean }[];
   needsPlayer?: boolean;
+  control?: boolean; // changes playback for everyone: dj role rules apply
   run(c: Ctx, lavalink: LavalinkManager, player: Player | undefined): Promise<unknown>;
 }
 
@@ -87,9 +89,12 @@ function sameVoice(c: Ctx, player?: Player) {
 // joins voice if needed, fetches the first song right away, queues the rest
 async function enqueue(c: Ctx, lavalink: LavalinkManager, player: Player | undefined, found: Found, intro = '') {
   if (!player) {
+    const s = settingsOf(c.guildId);
     player = lavalink.createPlayer({
       guildId: c.guildId, voiceChannelId: c.member.voice.channelId!, textChannelId: c.channelId, selfDeaf: true, volume: 80, node: pickNode(),
     });
+    player.set('autoplay', s.autoplay);
+    player.set('normalise', s.normalise);
   }
   if (!player.connected) await player.connect();
   const lead = intro ? `${intro}\n` : '';
@@ -214,7 +219,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'autoplay', aliases: ['ap', 'auto'], about: 'Keep playing related songs when the queue ends', needsPlayer: true,
+    name: 'autoplay', aliases: ['ap', 'auto'], about: 'Keep playing related songs when the queue ends', needsPlayer: true, control: true,
     async run(c, _l, player) {
       const on = !player!.get('autoplay');
       player!.set('autoplay', on);
@@ -223,7 +228,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'pause', aliases: [], about: 'Pause the music', needsPlayer: true,
+    name: 'pause', aliases: [], about: 'Pause the music', needsPlayer: true, control: true,
     async run(c, _l, player) {
       await player!.pause();
       await refreshCard(player!);
@@ -231,7 +236,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'resume', aliases: ['unpause', 'r'], about: 'Carry on playing', needsPlayer: true,
+    name: 'resume', aliases: ['unpause', 'r'], about: 'Carry on playing', needsPlayer: true, control: true,
     async run(c, _l, player) {
       await player!.resume();
       await refreshCard(player!);
@@ -241,12 +246,11 @@ const commands: Command[] = [
   {
     name: 'skip', aliases: ['s', 'next', 'n'], about: 'Skip to the next song', needsPlayer: true,
     async run(c, _l, player) {
-      await player!.skip(0, false);
-      return c.reply(say('skipped'), true);
+      return c.reply(await trySkip(c, player!));
     },
   },
   {
-    name: 'skipto', aliases: ['st', 'jump'], about: 'Jump to a song in the queue', needsPlayer: true,
+    name: 'skipto', aliases: ['st', 'jump'], about: 'Jump to a song in the queue', needsPlayer: true, control: true,
     args: [{ name: 'position', kind: 'int', about: 'Its number in the queue', required: true }],
     async run(c, _l, player) {
       const n = c.int('position');
@@ -261,13 +265,14 @@ const commands: Command[] = [
       if (!player) return c.reply(say('nothing'), true);
       const problem = sameVoice(c, player);
       if (problem) return c.reply(problem, true);
+      if (!canControl(c.member, player)) return c.reply(say('djOnly'), true);
       await dropCard(c.guildId);
       await player.destroy();
       return c.reply(say('stopped'));
     },
   },
   {
-    name: 'volume', aliases: ['vol', 'v'], about: 'Change the volume', needsPlayer: true,
+    name: 'volume', aliases: ['vol', 'v'], about: 'Change the volume', needsPlayer: true, control: true,
     args: [{ name: 'level', kind: 'int', about: '0 to 150', required: true }],
     async run(c, _l, player) {
       const v = c.int('level');
@@ -292,7 +297,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'remove', aliases: ['rm', 'del'], about: 'Remove a song from the queue', needsPlayer: true,
+    name: 'remove', aliases: ['rm', 'del'], about: 'Remove a song from the queue', needsPlayer: true, control: true,
     args: [{ name: 'position', kind: 'int', about: 'Its number in the queue', required: true }],
     async run(c, _l, player) {
       const n = c.int('position');
@@ -304,7 +309,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'move', aliases: ['mv'], about: 'Move a song to another spot in the queue', needsPlayer: true,
+    name: 'move', aliases: ['mv'], about: 'Move a song to another spot in the queue', needsPlayer: true, control: true,
     args: [
       { name: 'from', kind: 'int', about: 'Its number now', required: true },
       { name: 'to', kind: 'int', about: 'Where it should go', required: true },
@@ -322,7 +327,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'clear', aliases: ['cl'], about: 'Clear the queue (keeps the current song)', needsPlayer: true,
+    name: 'clear', aliases: ['cl'], about: 'Clear the queue (keeps the current song)', needsPlayer: true, control: true,
     async run(c, _l, player) {
       const n = player!.queue.tracks.length;
       await player!.queue.splice(0, n);
@@ -331,7 +336,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'shuffle', aliases: ['sh', 'mix'], about: 'Shuffle the queue', needsPlayer: true,
+    name: 'shuffle', aliases: ['sh', 'mix'], about: 'Shuffle the queue', needsPlayer: true, control: true,
     async run(c, _l, player) {
       if (player!.queue.tracks.length < 2) return c.reply('Need at least two songs in the queue to shuffle.', true);
       await player!.queue.shuffle();
@@ -340,7 +345,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'loop', aliases: ['l', 'repeat'], about: 'Loop the song or the queue', needsPlayer: true,
+    name: 'loop', aliases: ['l', 'repeat'], about: 'Loop the song or the queue', needsPlayer: true, control: true,
     args: [{ name: 'mode', kind: 'text', about: 'off, song or queue (leave empty to cycle)' }],
     async run(c, _l, player) {
       const asked = (c.str('mode') ?? '').toLowerCase();
@@ -353,7 +358,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'seek', aliases: ['jumpto'], about: 'Jump to a time in the song', needsPlayer: true,
+    name: 'seek', aliases: ['jumpto'], about: 'Jump to a time in the song', needsPlayer: true, control: true,
     args: [{ name: 'time', kind: 'text', about: 'Like 1:30 or 90', required: true }],
     async run(c, _l, player) {
       const ms = toMs(c.str('time') ?? '');
@@ -373,7 +378,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'filter', aliases: ['fx', 'filters', 'effect'], about: 'Sound filters: bassboost, nightcore, vaporwave, 8d, karaoke and more', needsPlayer: true,
+    name: 'filter', aliases: ['fx', 'filters', 'effect'], about: 'Sound filters: bassboost, nightcore, vaporwave, 8d, karaoke and more', needsPlayer: true, control: true,
     args: [{ name: 'name', kind: 'text', about: 'Filter to use (leave empty for the panel)', choices: Object.keys(PRESETS) }],
     async run(c, _l, player) {
       const name = c.str('name')?.toLowerCase();
@@ -383,7 +388,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'speed', aliases: ['sp'], about: 'Play faster or slower (0.5 to 2)', needsPlayer: true,
+    name: 'speed', aliases: ['sp'], about: 'Play faster or slower (0.5 to 2)', needsPlayer: true, control: true,
     args: [{ name: 'times', kind: 'text', about: 'Like 1.25 or 0.8', required: true }],
     async run(c, _l, player) {
       const v = Number(c.str('times'));
@@ -393,7 +398,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'pitch', aliases: ['pt'], about: 'Higher or lower voice (0.5 to 2)', needsPlayer: true,
+    name: 'pitch', aliases: ['pt'], about: 'Higher or lower voice (0.5 to 2)', needsPlayer: true, control: true,
     args: [{ name: 'times', kind: 'text', about: 'Like 1.2 or 0.9', required: true }],
     async run(c, _l, player) {
       const v = Number(c.str('times'));
@@ -478,6 +483,13 @@ const commands: Command[] = [
     },
   },
   {
+    name: 'settings', aliases: ['setup', 'config'], about: 'Server settings: DJ role, vote skip, 24/7, request channel (Manage Server)',
+    async run(c) {
+      if (!isManager(c.member)) return c.reply('Only people with Manage Server can change the settings.', true);
+      return c.reply(settingsPanel(c.guildId));
+    },
+  },
+  {
     name: 'help', aliases: ['h', 'commands'], about: 'All commands',
     async run(c) {
       const lines = commands.filter((x) => x.name !== 'help').map((x) => {
@@ -519,7 +531,29 @@ async function dispatch(cmd: Command, c: Ctx, lavalink: LavalinkManager) {
     const problem = sameVoice(c, player);
     if (problem) return c.reply(problem, true);
   }
+  if (cmd.control && !canControl(c.member, player)) return c.reply(say('djOnly'), true);
   return cmd.run(c, lavalink, player);
+}
+
+// skipping: the dj, the person who asked for the song, or a vote when vote skip is on
+async function trySkip(c: Ctx, player: Player): Promise<string> {
+  const s = settingsOf(c.guildId);
+  const mine = (player.queue.current?.requester as Requester | undefined)?.id === c.user.id;
+  const free = s.voteSkip ? isManager(c.member) || (s.djRole && c.member.roles.cache.has(s.djRole)) || mine || listeners(c.member, player) <= 1 : canControl(c.member, player) || mine;
+  if (free) {
+    await player.skip(0, false);
+    return say('skipped');
+  }
+  if (!s.voteSkip) return say('djOnly');
+  const votes = new Set<string>(player.get('votes') ?? []);
+  votes.add(c.user.id);
+  player.set('votes', [...votes]);
+  const need = Math.ceil(listeners(c.member, player) / 2);
+  if (votes.size >= need) {
+    await player.skip(0, false);
+    return `Vote passed (${votes.size}/${need}). ${say('skipped')}`;
+  }
+  return `Vote to skip: ${votes.size}/${need}.`;
 }
 
 // ---------- slash ----------
@@ -536,6 +570,10 @@ export async function onCommand(i: ChatInputCommandInteraction, lavalink: Lavali
 export async function onMessage(m: Message, lavalink: LavalinkManager) {
   if (m.author.bot || !m.inGuild() || !m.member) return;
   const content = m.content.trim();
+  // the request channel: anything typed there is a song to play
+  if (settingsOf(m.guildId).requestChannel === m.channelId && content && !content.toLowerCase().startsWith(config.prefix.toLowerCase() + ' ')) {
+    return requestMessage(m, content, lavalink);
+  }
   const mention = new RegExp(`^<@!?${m.client.user.id}>\\s*`);
   let body: string | null = null;
   if (mention.test(content)) body = content.replace(mention, '');
@@ -585,6 +623,7 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     if (!player?.queue.current) return i.update({ components: [] });
     const vc = (i.member as GuildMember | null)?.voice?.channelId;
     if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+    if (!canControl(i.member as GuildMember, player)) return i.reply({ content: say('djOnly'), flags: MessageFlags.Ephemeral });
     return i.update(await onFilterControl(player, i.customId));
   }
   if (what === 'lyrics') {
@@ -624,6 +663,11 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (!player?.queue.current) return i.update({ components: [] });
   const vc = (i.member as GuildMember | null)?.voice?.channelId;
   if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+  if (what === 'skip') {
+    const note = await trySkip(interactionCtx(i), player);
+    return i.reply({ content: note, flags: MessageFlags.Ephemeral });
+  }
+  if (!canControl(i.member as GuildMember, player)) return i.reply({ content: say('djOnly'), flags: MessageFlags.Ephemeral });
   if (what === 'shuffle') {
     await player.queue.shuffle();
     return i.update(queuePage(player, 0));
@@ -635,11 +679,6 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (what === 'loop') {
     const order: RepeatMode[] = ['off', 'track', 'queue'];
     await player.setRepeatMode(order[(order.indexOf(player.repeatMode) + 1) % 3]);
-  }
-  if (what === 'skip') {
-    await i.deferUpdate();
-    await player.skip(0, false);
-    return;
   }
   if (what === 'stop') {
     await i.update({ components: [] });
@@ -701,6 +740,7 @@ export async function onFilterPick(i: StringSelectMenuInteraction, lavalink: Lav
   if (!player?.queue.current) return i.update({ components: [] });
   const vc = (i.member as GuildMember | null)?.voice?.channelId;
   if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+  if (!canControl(i.member as GuildMember, player)) return i.reply({ content: say('djOnly'), flags: MessageFlags.Ephemeral });
   return i.update(await onFilterControl(player, 'tt:fx', i.values[0]));
 }
 
@@ -721,4 +761,82 @@ export async function onLibraryPick(i: StringSelectMenuInteraction, lavalink: La
   if (!song) return i.reply({ content: 'That one is not in the history anymore.', flags: MessageFlags.Ephemeral });
   await i.deferReply();
   return enqueue(c, lavalink, player, { tracks: [fromWant(song, requester)] });
+}
+
+// a song typed in the request channel: play it, keep the channel clean
+async function requestMessage(m: Message<true>, text: string, lavalink: LavalinkManager) {
+  let note: Message | null = null;
+  const c: Ctx = {
+    guildId: m.guildId,
+    channelId: m.channelId,
+    member: m.member!,
+    user: m.author,
+    str: (n) => (n === 'query' ? text : null),
+    int: () => null,
+    async reply(p) {
+      const payload = typeof p === 'string' ? { content: p } : p;
+      if (note) await note.edit({ content: payload.content ?? '', embeds: payload.embeds ?? [] }).catch(() => {});
+      else note = await m.channel.send({ content: payload.content ?? '', embeds: payload.embeds ?? [] }).catch(() => null);
+      return note;
+    },
+    async wait(n) {
+      if (!note) note = await m.channel.send(n ?? '…').catch(() => null);
+    },
+  };
+  await m.delete().catch(() => {});
+  await dispatch(byName.get('play')!, c, lavalink);
+  setTimeout(() => note?.delete().catch(() => {}), 8000);
+}
+
+// ---------- the settings panel ----------
+
+export async function onSettings(i: ButtonInteraction | RoleSelectMenuInteraction | ChannelSelectMenuInteraction, lavalink: LavalinkManager) {
+  const member = i.member as GuildMember;
+  if (!isManager(member)) return i.reply({ content: 'Only people with Manage Server can change the settings.', flags: MessageFlags.Ephemeral });
+  const gid = i.guildId!;
+  const s = settingsOf(gid);
+  const what = i.customId.split(':')[2];
+  if (what === 'vote') updateSettings(gid, { voteSkip: !s.voteSkip });
+  if (what === 'auto') updateSettings(gid, { autoplay: !s.autoplay });
+  if (what === 'norm') updateSettings(gid, { normalise: !s.normalise });
+  if (what === 'stay') {
+    if (s.stay) updateSettings(gid, { stay: false, stayVoice: undefined, stayText: undefined });
+    else {
+      const vc = member.voice.channelId;
+      if (!vc) return i.reply({ content: 'Join the voice channel I should stay in, then turn 24/7 on.', flags: MessageFlags.Ephemeral });
+      updateSettings(gid, { stay: true, stayVoice: vc, stayText: i.channelId });
+      await stayIn(lavalink, gid);
+    }
+  }
+  if (what === 'dj' && i.isRoleSelectMenu()) updateSettings(gid, { djRole: i.values[0] });
+  if (what === 'req' && i.isChannelSelectMenu()) {
+    const old = s.requestChannel && s.requestMessage ? await i.client.channels.fetch(s.requestChannel).catch(() => null) : null;
+    if (old?.isTextBased()) await old.messages.delete(s.requestMessage!).catch(() => {});
+    setBoard(gid, null);
+    const id = i.values[0];
+    if (!id) updateSettings(gid, { requestChannel: undefined, requestMessage: undefined });
+    else {
+      const ch = await i.client.channels.fetch(id).catch(() => null);
+      if (!ch?.isSendable()) return i.reply({ content: 'I cannot send messages there.', flags: MessageFlags.Ephemeral });
+      const board = await ch.send({ embeds: [idleBoard()] });
+      updateSettings(gid, { requestChannel: id, requestMessage: board.id });
+      setBoard(gid, board);
+      const player = lavalink.getPlayer(gid);
+      if (player?.queue.current) await refreshCard(player);
+    }
+  }
+  return i.update(settingsPanel(gid));
+}
+
+// 24/7: sit in the saved voice channel even with nothing playing
+export async function stayIn(lavalink: LavalinkManager, gid: string) {
+  const s = settingsOf(gid);
+  if (!s.stay || !s.stayVoice) return;
+  let player = lavalink.getPlayer(gid);
+  if (!player) {
+    player = lavalink.createPlayer({ guildId: gid, voiceChannelId: s.stayVoice, textChannelId: s.stayText ?? s.stayVoice, selfDeaf: true, volume: 80, node: pickNode() });
+    player.set('autoplay', s.autoplay);
+    player.set('normalise', s.normalise);
+  }
+  if (!player.connected) await player.connect().catch((e) => log('24/7 join failed', e));
 }

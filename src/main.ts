@@ -2,8 +2,9 @@ import { watchFile, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
-import { dropCard, isCard, showCard } from './card.js';
-import { definitions, onAutocomplete, onButton, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, queuePage } from './commands.js';
+import { dropCard, idleBoard, isCard, setBoard, showCard } from './card.js';
+import { definitions, onAutocomplete, onButton, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
+import { allSettings, settingsOf } from './settings.js';
 import { noteHistory, songOfTrack } from './library.js';
 import { normalise, stopLyrics } from './sound.js';
 import { config } from './config.js';
@@ -31,7 +32,6 @@ const lavalink = new LavalinkManager({
     useUnresolvedData: true,
     // a manual disconnect means leave, not come straight back
     onDisconnect: { autoReconnect: false, destroyPlayer: true },
-    onEmptyQueue: { destroyAfterMs: 5 * 60_000 },
   },
 });
 useManager(lavalink);
@@ -43,6 +43,7 @@ lavalink.nodeManager
 
 lavalink
   .on('trackStart', (player, track) => {
+    player.set('votes', []);
     if (track) {
       notePlayed(player, track.info.title);
       const who = (track.requester as Requester | undefined)?.id;
@@ -89,7 +90,14 @@ lavalink
     }
     await dropCard(player.guildId);
     const ch = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
-    if (ch?.isSendable()) ch.send(say('queueEnd')).catch(() => {});
+    if (ch?.isSendable() && settingsOf(player.guildId).requestChannel !== player.textChannelId) ch.send(say('queueEnd')).catch(() => {});
+    // leave after a few quiet minutes, unless the server has 24/7 on
+    if (!settingsOf(player.guildId).stay) {
+      setTimeout(() => {
+        const p = lavalink.getPlayer(player.guildId);
+        if (p && !p.queue.current && !p.playing && !settingsOf(p.guildId).stay) p.destroy().catch(() => {});
+      }, 5 * 60_000);
+    }
   })
   .on('playerDestroy', (player) => {
     dropCard(player.guildId);
@@ -107,7 +115,7 @@ client.on('voiceStateUpdate', (before, after) => {
   const channel = client.channels.cache.get(player.voiceChannelId);
   if (!channel?.isVoiceBased()) return;
   const people = channel.members.filter((m) => !m.user.bot).size;
-  if (people > 0) {
+  if (people > 0 || settingsOf(gid).stay) {
     clearTimeout(lonely.get(gid));
     lonely.delete(gid);
   } else if (!lonely.has(gid)) {
@@ -126,6 +134,19 @@ client.on('guildCreate', register);
 client.once('clientReady', async (c) => {
   await lavalink.init({ id: c.user.id, username: c.user.username });
   for (const g of c.guilds.cache.values()) await register(g);
+  // request channel boards and 24/7 servers come back after a restart
+  for (const { guild, s } of allSettings()) {
+    if (!c.guilds.cache.has(guild)) continue;
+    if (s.requestChannel && s.requestMessage) {
+      const ch = await c.channels.fetch(s.requestChannel).catch(() => null);
+      const board = ch?.isTextBased() ? await ch.messages.fetch(s.requestMessage).catch(() => null) : null;
+      if (board) {
+        setBoard(guild, board);
+        await board.edit({ content: '', embeds: [idleBoard()], components: [] }).catch(() => {});
+      }
+    }
+    if (s.stay) await stayIn(lavalink, guild);
+  }
   log(`${c.user.tag} is up, youtube ${config.youtube ? 'on' : 'off'}`);
 });
 
@@ -140,6 +161,7 @@ client.on('interactionCreate', async (i) => {
     else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId === 'tt:fx' && i.inGuild()) await onFilterPick(i, lavalink);
     else if (i.isStringSelectMenu() && /^tt:(plload|hist):/.test(i.customId) && i.inGuild()) await onLibraryPick(i, lavalink);
+    else if ((i.isButton() || i.isRoleSelectMenu() || i.isChannelSelectMenu()) && i.customId.startsWith('tt:set:') && i.inGuild()) await onSettings(i, lavalink);
     else if (i.isButton() && i.customId.startsWith('tt:') && i.inGuild()) {
       const id = i.customId;
       if (id === 'tt:queue') {

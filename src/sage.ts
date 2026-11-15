@@ -32,6 +32,7 @@ const lines = {
   notOriginal: [
     'Great Sage: the original is not free on SoundCloud, so this is the closest version I found.',
   ],
+  djOnly: ['Only the DJ role (or whoever asked for this song) can do that here.'],
   noVoice: ['Join a voice channel first, then call me.'],
   otherVoice: ['I am already playing in another channel here.'],
   nothing: ['Nothing is playing right now.'],
