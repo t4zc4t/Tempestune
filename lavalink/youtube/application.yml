@@ -16,7 +16,8 @@ lavalink:
       twitch: false
       vimeo: false
       nico: false
-      http: false
+      # the relay and radio play here too, so one player can mix sources
+      http: true
       local: false
     bufferDurationMs: 400
     frameBufferDurationMs: 5000
