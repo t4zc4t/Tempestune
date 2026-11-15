@@ -2,7 +2,8 @@ import type { LavalinkManager, LavalinkNode, Player, Track, UnresolvedTrack } fr
 import { config } from './config.js';
 import { isApple, isDeezer, isSpotify, readDeezer, readSpotify, type SongInfo } from './links.js';
 import { log } from './log.js';
-import { best, catalogue, guessSong, offOriginal, type Canon } from './rank.js';
+import { best, catalogue, guessSong, norm, offOriginal, type Canon } from './rank.js';
+import { findStations, searchJamendo, type Station } from './extras.js';
 import { listOf, relay, searchSoundCloud, searchYouTube, type RelayHit } from './relay.js';
 
 export interface Requester {
@@ -12,7 +13,7 @@ export interface Requester {
 
 // what a queued song needs so it can be found again when its turn comes
 export interface Want extends SongInfo {
-  how: 'relay' | 'youtube' | 'find';
+  how: 'relay' | 'youtube' | 'find' | 'direct'; // direct: lavalink can play the url itself (radio, jamendo)
   source: string;
   uri?: string;
   noYoutube?: boolean; // set after youtube already failed for this song
@@ -83,6 +84,7 @@ async function matchWords(text: string): Promise<Match | null> {
 
 // finds the actual audio for a queued song
 async function findAudio(want: Want, player: Player, requester: Requester): Promise<Track> {
+  if (want.how === 'direct' && want.uri) return loadOne(player.node, want.uri, requester);
   if (want.how !== 'find' && want.uri) return loadOne(player.node, await relay(want.uri), requester);
   // metadata only (spotify, apple, deezer) or a song whose own link failed: search by name
   const m = await matchSong({ title: want.title, author: want.author, duration: want.duration }, `${want.author} ${want.title}`, want.noYoutube);
@@ -178,4 +180,91 @@ export function fallbackFor(track: Track | UnresolvedTrack, requester: Requester
 export function warmNext(player: Player) {
   const want = player.queue.tracks[0]?.userData?.want as unknown as Want | undefined;
   if (want?.how === 'relay' && want.uri) relay(want.uri).catch(() => {});
+}
+
+// ---------- picking from a list (search menu) ----------
+
+export interface Option {
+  want: Want;
+  label: string;
+  detail: string;
+}
+
+const mmss = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
+const SOURCE_NAME: Record<string, string> = { youtube: 'YouTube', soundcloud: 'SoundCloud', radio: 'Radio', jamendo: 'Jamendo' };
+
+export type Length = 'any' | 'short' | 'normal' | 'long';
+const fitsLength = (ms: number, len: Length) =>
+  len === 'any' || (len === 'short' && ms > 0 && ms < 3 * 60_000) || (len === 'normal' && ms >= 3 * 60_000 && ms <= 6 * 60_000) || (len === 'long' && ms > 6 * 60_000);
+
+export const stationWant = (st: Station): Want => ({ title: st.name, author: [st.country, st.tags.split(',').slice(0, 2).join(', ')].filter(Boolean).join(' · ') || 'Internet radio', uri: st.url, link: st.url, artwork: st.favicon, how: 'direct', source: 'radio' });
+
+// everything that matches, from every source that is on, for the search menu
+export async function searchAll(text: string, source = 'all', length: Length = 'any'): Promise<Option[]> {
+  const want = (s: string) => source === 'all' || source === s;
+  const [yt, sc, radio, jam] = await Promise.all([
+    want('youtube') && youtubeOn() ? ytSearch(text) : Promise.resolve([] as RelayHit[]),
+    want('soundcloud') ? searchSoundCloud(text, 10).catch(() => [] as RelayHit[]) : Promise.resolve([] as RelayHit[]),
+    source === 'radio' ? findStations(text, 10) : Promise.resolve([] as Station[]),
+    want('jamendo') ? searchJamendo(text, 5) : Promise.resolve([]),
+  ]);
+  const hits: Option[] = [
+    ...yt.map((h) => ({ h, s: 'youtube' })),
+    ...sc.map((h) => ({ h, s: 'soundcloud' })),
+  ]
+    .filter((x) => fitsLength(x.h.duration, length))
+    .map(({ h, s }) => ({ want: fromHit(h, s), label: h.title, detail: `${SOURCE_NAME[s]} · ${h.author} · ${mmss(h.duration)}` }));
+  // youtube and soundcloud take turns so both show up near the top
+  const mixed: Option[] = [];
+  const a = hits.filter((o) => o.want.source === 'youtube');
+  const b = hits.filter((o) => o.want.source === 'soundcloud');
+  while (a.length || b.length) {
+    if (a.length) mixed.push(a.shift()!);
+    if (a.length) mixed.push(a.shift()!);
+    if (b.length) mixed.push(b.shift()!);
+  }
+  for (const st of radio) mixed.push({ want: stationWant(st), label: st.name, detail: `Radio · ${st.country || 'online'} · ${st.codec}` });
+  for (const t of jam)
+    if (fitsLength(t.duration, length))
+      mixed.push({ want: { title: t.title, author: t.author, duration: t.duration, uri: t.url, link: t.link, artwork: t.artwork, how: 'direct', source: 'jamendo' }, label: t.title, detail: `Jamendo · ${t.author} · ${mmss(t.duration)}` });
+  return mixed.slice(0, 25);
+}
+
+// a song known by name (from a lyrics line, a saved playlist...) as a queue entry
+export const fromSong = (song: Canon & { artwork?: string; link?: string }, requester: Requester, source = 'search') =>
+  queued({ title: song.title, author: song.author, duration: song.duration, artwork: song.artwork, link: song.link, how: 'find', source }, requester);
+
+export const fromWant = (want: Want, requester: Requester) => queued({ ...want }, requester);
+
+// ---------- autoplay: keep going with related songs when the queue runs out ----------
+
+const ytId = (url?: string) => (url ? /(?:v=|youtu\.be\/)([\w-]{11})/.exec(url)?.[1] : undefined);
+
+export async function related(player: Player, requester: Requester): Promise<UnresolvedTrack | null> {
+  const last = (player.queue.previous[0] ?? player.queue.current) as Track | undefined;
+  if (!last || !youtubeOn()) return null;
+  const want = last.userData?.want as unknown as Want | undefined;
+  let id = ytId(want?.uri) ?? ytId(last.info.uri);
+  if (!id) {
+    const m = await matchSong({ title: want?.title ?? last.info.title, author: want?.author ?? last.info.author, duration: last.info.duration }, `${last.info.author} ${last.info.title}`);
+    id = ytId(m?.hit.url);
+  }
+  if (!id) return null;
+  // youtube's own mix for that song: a list of related tracks
+  const mix = await listOf(`https://www.youtube.com/watch?v=${id}&list=RD${id}`).catch(() => null);
+  const played: string[] = player.get('played') ?? [];
+  const seen = new Set(played);
+  const pick = mix?.hits.find((h) => {
+    const key = norm(h.title).slice(0, 40);
+    return !seen.has(key) && h.duration > 90_000 && h.duration < 8 * 60_000 && !offOriginal(h, '', undefined);
+  });
+  if (!pick) return null;
+  return queued({ ...fromHit(pick, 'youtube'), source: 'youtube' }, requester);
+}
+
+// remembers what played, so autoplay doesn't loop back to it
+export function notePlayed(player: Player, title: string) {
+  const played: string[] = player.get('played') ?? [];
+  played.unshift(norm(title).slice(0, 40));
+  player.set('played', played.slice(0, 100));
 }
