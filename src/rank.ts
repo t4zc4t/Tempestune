@@ -20,6 +20,9 @@ export function score(hit: RelayHit, asked: string, canon?: Canon) {
   const q = norm(asked);
   let s = 0;
   for (const v of VERSIONS) if (has(t, v) && !has(q, v)) s -= 40;
+  // youtube: plain audio uploads beat music videos, which often have intros and skits
+  if (/\b(official audio|audio|topic|lyrics?|lyric video)\b/.test(t)) s += 8;
+  if (/\b(official video|music video|official mv|fan video|visualizer)\b/.test(t)) s -= 6;
   if (canon) {
     const artist = norm(canon.author).split(' ').filter((w) => w.length > 2);
     const title = norm(canon.title).split(' ').filter((w) => w.length > 1);

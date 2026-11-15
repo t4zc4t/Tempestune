@@ -1,8 +1,9 @@
 import type { LavalinkManager, LavalinkNode, Player, Track, UnresolvedTrack } from 'lavalink-client';
 import { config } from './config.js';
 import { isApple, isDeezer, isSpotify, readDeezer, readSpotify, type SongInfo } from './links.js';
-import { best, canonFor, offOriginal } from './rank.js';
-import { listOf, relay, searchSoundCloud, type RelayHit } from './relay.js';
+import { log } from './log.js';
+import { best, canonFor, offOriginal, type Canon } from './rank.js';
+import { listOf, relay, searchSoundCloud, searchYouTube, type RelayHit } from './relay.js';
 
 export interface Requester {
   id: string;
@@ -21,9 +22,9 @@ let manager: LavalinkManager;
 export const useManager = (m: LavalinkManager) => (manager = m);
 
 const node = (id: string) => manager.nodeManager.nodes.get(id);
-export const youtubeUp = () => config.youtube && !!node('youtube')?.connected;
-// youtube needs its own node, everything else plays anywhere
-export const pickNode = () => (youtubeUp() ? 'youtube' : 'main');
+// youtube now goes through yt-dlp like soundcloud, so every player lives on the one node
+export const youtubeOn = () => config.youtube;
+export const pickNode = () => 'main';
 
 // straight to lavalink's rest api: the client's own search refuses our local relay links
 // on a node without soundcloud, even though lavalink plays them fine
@@ -34,24 +35,29 @@ async function loadOne(on: LavalinkNode, query: string, requester: Requester) {
   return manager.utils.buildTrack(data, requester);
 }
 
-const nearest = <T>(items: T[], len: (x: T) => number, want?: number) =>
-  want ? [...items].sort((a, b) => Math.abs(len(a) - want) - Math.abs(len(b) - want)).find((x) => Math.abs(len(x) - want) < 8000) ?? items[0] : items[0];
-
-// finds the actual audio for a queued song, on whatever node the player is on
-async function findAudio(want: Want, player: Player, requester: Requester): Promise<Track> {
-  if (want.how === 'relay' && want.uri) return loadOne(player.node, await relay(want.uri), requester);
-  if (want.how === 'youtube' && want.uri && player.node.id === 'youtube') return loadOne(player.node, want.uri, requester);
-  // metadata only (spotify, apple, deezer) or a youtube song that failed: soundcloud first, it is the reliable one
-  const q = `${want.author} ${want.title}`.trim();
-  const hits = await searchSoundCloud(q, 10).catch(() => []);
-  const hit = best(hits, q, { title: want.title, author: want.author, duration: want.duration });
-  if (hit) return loadOne(player.node, await relay(hit.url), requester);
-  if (player.node.id === 'youtube' && !want.noYoutube) {
-    const res = await player.node.search({ query: q, source: 'ytmsearch' }, requester).catch(() => null);
-    const best = nearest(res?.tracks ?? [], (t) => t.info.duration, want.duration);
-    if (best?.encoded) return best;
+// best match for a song we only know by name: youtube first when it's on (it has the full originals), soundcloud after
+async function matchByName(q: string, canon: Canon | undefined, noYoutube = false): Promise<{ hit: RelayHit; source: string } | null> {
+  if (youtubeOn() && !noYoutube) {
+    const yt = await searchYouTube(q, 10).catch((e) => {
+      log('youtube search failed:', e instanceof Error ? e.message : e);
+      return [];
+    });
+    const hit = best(yt, q, canon);
+    if (hit) return { hit, source: 'youtube' };
   }
-  throw new Error(`no audio found for ${q}`);
+  const sc = await searchSoundCloud(q, 10).catch(() => []);
+  const hit = best(sc, q, canon);
+  return hit ? { hit, source: 'soundcloud' } : null;
+}
+
+// finds the actual audio for a queued song
+async function findAudio(want: Want, player: Player, requester: Requester): Promise<Track> {
+  if (want.how !== 'find' && want.uri) return loadOne(player.node, await relay(want.uri), requester);
+  // metadata only (spotify, apple, deezer) or a song whose own link failed: search by name
+  const q = `${want.author} ${want.title}`.trim();
+  const m = await matchByName(q, { title: want.title, author: want.author, duration: want.duration }, want.noYoutube);
+  if (!m) throw new Error(`no audio found for ${q}`);
+  return loadOne(player.node, await relay(m.hit.url), requester);
 }
 
 export function queued(want: Want, requester: Requester): UnresolvedTrack {
@@ -111,32 +117,27 @@ export async function find(input: string, requester: Requester): Promise<Found> 
     const songs = (res.tracks ?? []).map((t) => ({ title: t.info.title, author: t.info.author, duration: t.info.duration, artwork: t.info.artworkUrl ?? undefined, link: t.info.uri ?? undefined }));
     return { tracks: fromSongs(songs, 'applemusic', requester), name: res.loadType === 'playlist' ? res.playlist?.name : undefined };
   }
-  if (isUrl && /soundcloud\.com\/|bandcamp\.com\//i.test(text)) {
-    const source = /bandcamp/i.test(text) ? 'bandcamp' : 'soundcloud';
+  if (isUrl && /soundcloud\.com\/|bandcamp\.com\/|youtube\.com\/|youtu\.be\//i.test(text)) {
+    const source = /bandcamp/i.test(text) ? 'bandcamp' : /soundcloud/i.test(text) ? 'soundcloud' : 'youtube';
+    if (source === 'youtube' && !youtubeOn()) throw new Error('youtube is off');
     const list = await listOf(text);
     return { tracks: list.hits.map((h) => queued(fromHit(h, source), requester)), name: list.name };
   }
-  if (isUrl && /youtube\.com\/|youtu\.be\//i.test(text)) {
-    if (!youtubeUp()) throw new Error('youtube is off');
-    const res = await node('youtube')!.search({ query: text }, requester);
-    return { tracks: res.tracks ?? [], name: res.loadType === 'playlist' ? res.playlist?.name : undefined };
-  }
   if (isUrl) throw new Error('that link is not a supported source');
 
-  // plain words: soundcloud, ranked against the real song when deezer knows it
-  const [hits, canon] = await Promise.all([searchSoundCloud(text, 10), canonFor(text)]);
-  const hit = best(hits, text, canon);
-  if (!hit) return { tracks: [] };
-  return { tracks: [queued(fromHit(hit, 'soundcloud'), requester)], notOriginal: offOriginal(hit, text, canon) };
+  // plain words: ranked against the real song when apple or deezer knows it
+  const canon = await canonFor(text);
+  const m = await matchByName(text, canon);
+  if (!m) return { tracks: [] };
+  return { tracks: [queued(fromHit(m.hit, m.source), requester)], notOriginal: offOriginal(m.hit, text, canon) };
 }
 
-// when youtube refuses a song, look for the same song on soundcloud instead
+// when a youtube download fails, look for the same song on soundcloud instead (once)
 export function fallbackFor(track: Track | UnresolvedTrack, requester: Requester): UnresolvedTrack | null {
   const want = track.userData?.want as unknown as Want | undefined;
-  if (want?.noYoutube) return null; // already tried once
-  const fromYoutube = track.info.sourceName === 'youtube' || want?.how === 'youtube' || (want?.how === 'find' && !want?.noYoutube);
-  if (!fromYoutube || !track.info.title) return null;
-  return queued({ title: track.info.title, author: track.info.author ?? '', duration: track.info.duration, artwork: track.info.artworkUrl ?? undefined, link: track.info.uri ?? undefined, how: 'find', source: want?.source ?? 'youtube', noYoutube: true }, requester);
+  if (!want || want.noYoutube || !track.info.title) return null;
+  if (want.source !== 'youtube' && want.how !== 'find') return null;
+  return queued({ title: want.title || track.info.title, author: want.author || track.info.author || '', duration: want.duration, artwork: want.artwork, link: want.link, how: 'find', source: 'soundcloud', noYoutube: true }, requester);
 }
 
 // fetch the next relay track early so there's no gap
