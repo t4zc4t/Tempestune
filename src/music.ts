@@ -94,6 +94,22 @@ async function findAudio(want: Want, player: Player, requester: Requester): Prom
   return loadOne(player.node, await relay(m.hit.url), requester);
 }
 
+// radio stations die all the time, so try a few and keep the first one lavalink can actually open
+export async function workingStation(wants: Want[], requester: Requester): Promise<Want | null> {
+  const node = manager.nodeManager.nodes.get(pickNode());
+  if (!node) return null;
+  for (const w of wants) {
+    if (!w.uri) continue;
+    const ok = await Promise.race([
+      loadOne(node, w.uri, requester).then(() => true, () => false),
+      new Promise<boolean>((r) => setTimeout(() => r(false), 7000)),
+    ]);
+    if (ok) return w;
+    log(`radio: ${w.title} did not open, trying the next one`);
+  }
+  return null;
+}
+
 export function queued(want: Want, requester: Requester): UnresolvedTrack {
   const t = manager.utils.buildUnresolvedTrack(
     { title: want.title, author: want.author, duration: want.duration, uri: want.link ?? want.uri, artworkUrl: want.artwork, sourceName: want.source as any },
@@ -243,8 +259,8 @@ export const fromWant = (want: Want, requester: Requester) => queued({ ...want }
 
 const ytId = (url?: string) => (url ? /(?:v=|youtu\.be\/)([\w-]{11})/.exec(url)?.[1] : undefined);
 
-export async function related(player: Player, requester: Requester): Promise<UnresolvedTrack | null> {
-  const last = (player.queue.previous[0] ?? player.queue.current) as Track | undefined;
+export async function related(player: Player, requester: Requester, seed?: Track): Promise<UnresolvedTrack | null> {
+  const last = (seed ?? player.queue.previous[0] ?? player.queue.current) as Track | undefined;
   if (!last || !youtubeOn()) return null;
   const want = last.userData?.want as unknown as Want | undefined;
   let id = ytId(want?.uri) ?? ytId(last.info.uri);
@@ -270,4 +286,28 @@ export function notePlayed(player: Player, title: string) {
   const played: string[] = player.get('played') ?? [];
   played.unshift(norm(title).slice(0, 40));
   player.set('played', played.slice(0, 100));
+}
+
+// autoplay, ready ahead: while the last song plays, the next related one is found and fetched,
+// but kept out of the queue until the queue actually runs out
+export async function prepareAutoplay(player: Player, requester: Requester) {
+  const current = player.queue.current as Track | null;
+  if (!player.get('autoplay') || !current || player.queue.tracks.length) return;
+  const seed = current.encoded ?? current.info.title;
+  if (player.get('autoSeed') === seed) return; // already working on this one
+  player.set('autoSeed', seed);
+  player.set('autoNext', null);
+  const next = await related(player, requester, current).catch(() => null);
+  if (!next || player.get('autoSeed') !== seed) return;
+  const ok = await next.resolve(player).then(() => true, () => false);
+  if (ok && player.get('autoSeed') === seed) player.set('autoNext', next);
+}
+
+// takes the prepared song if it is still for the song that just ended
+export function takeAutoplay(player: Player, ended?: Track | null) {
+  const next = player.get('autoNext') as UnresolvedTrack | Track | null;
+  const ready = !!next && !!ended && player.get('autoSeed') === (ended.encoded ?? ended.info.title);
+  player.set('autoNext', null);
+  player.set('autoSeed', null);
+  return ready ? next : null;
 }

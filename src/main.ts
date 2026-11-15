@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, idleBoard, isCard, setBoard, showCard } from './card.js';
-import { definitions, onAutocomplete, onButton, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
+import { definitions, onAutocomplete, onButton, onHelp, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
 import { allSettings, settingsOf } from './settings.js';
 import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './keep.js';
 import { noteHistory, songOfTrack } from './library.js';
@@ -11,7 +11,7 @@ import { normalise, stopLyrics } from './sound.js';
 import { config } from './config.js';
 import { syncIcons } from './icons.js';
 import { log } from './log.js';
-import { fallbackFor, notePlayed, related, useManager, warmNext, type Requester } from './music.js';
+import { fallbackFor, notePlayed, prepareAutoplay, related, takeAutoplay, useManager, warmNext, type Requester } from './music.js';
 import { startRelay } from './relay.js';
 import { say } from './sage.js';
 
@@ -49,7 +49,8 @@ lavalink.nodeManager
 
 lavalink
   .on('trackStart', (player, track) => {
-    player.set('votes', []);
+    player.set('votes:skip', []);
+    player.set('votes:stop', []);
     if (track) {
       notePlayed(player, track.info.title);
       const who = (track.requester as Requester | undefined)?.id;
@@ -65,6 +66,8 @@ lavalink
     showCard(client, player);
     warmNext(player);
     saveQueue(player);
+    // the last song in the queue: get the autoplay one ready now, so there is no wait later
+    prepareAutoplay(player, { id: client.user!.id, name: 'autoplay' }).catch((e) => log('autoplay prep failed', e instanceof Error ? e.message : e));
   })
   .on('trackError', async (player, track, payload) => {
     log(`track failed: ${track?.info?.title}`, String((payload as any)?.exception?.message ?? (payload as any)?.message ?? '').split('\n')[0]);
@@ -85,10 +88,11 @@ lavalink
   .on('queueEnd', async (player, track) => {
     // autoplay: one related song at a time, as long as it stays on
     if (player.get('autoplay')) {
-      const next = await related(player, (track?.requester as Requester) ?? { id: client.user!.id, name: 'autoplay' }).catch((e) => {
+      const ready = takeAutoplay(player, track as any);
+      const next = ready ?? (await related(player, { id: client.user!.id, name: 'autoplay' }, (track as any) ?? undefined).catch((e) => {
         log('autoplay failed:', e instanceof Error ? e.message : e);
         return null;
-      });
+      }));
       if (next) {
         await player.queue.add(next);
         await player.play().catch((e: unknown) => log('autoplay play failed', e));
@@ -170,6 +174,7 @@ client.on('interactionCreate', async (i) => {
   try {
     if (i.isAutocomplete()) return void (await onAutocomplete(i));
     if (i.isChatInputCommand() && i.inGuild()) await onCommand(i, lavalink);
+    else if ((i.isButton() || i.isStringSelectMenu()) && i.customId.startsWith('tt:help')) await onHelp(i);
     else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId === 'tt:fx' && i.inGuild()) await onFilterPick(i, lavalink);
     else if (i.isStringSelectMenu() && /^tt:(plload|hist):/.test(i.customId) && i.inGuild()) await onLibraryPick(i, lavalink);
