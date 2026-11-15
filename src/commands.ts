@@ -7,6 +7,7 @@ import { cardButtons, cardEmbed, clock, dropCard, refreshCard, SLIME } from './c
 import { config } from './config.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
+import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist, historyEmbed, playlistEmbed, playlistsEmbed, recent, savePlaylist, songOfTrack, songsOfQueue, toggleFavourite } from './library.js';
 import { applyPreset, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics } from './sound.js';
 import { find, fromSong, fromWant, pickNode, searchAll, stationWant, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
@@ -402,6 +403,81 @@ const commands: Command[] = [
     },
   },
   {
+    name: 'playlist', aliases: ['pl', 'playlists'], about: 'Your saved playlists: save, load, list, show, add, delete, share, import',
+    args: [
+      { name: 'action', kind: 'text', about: 'What to do', choices: ['list', 'save', 'load', 'show', 'add', 'delete', 'share', 'import'] },
+      { name: 'name', kind: 'text', about: 'Playlist name, share code, or a link to import', rest: true },
+    ],
+    async run(c, lavalink, player) {
+      const action = (c.str('action') ?? 'list').toLowerCase();
+      let name = (c.str('name') ?? '').trim();
+      const me = c.user.id;
+      const requester: Requester = { id: me, name: c.user.username };
+      if (action === 'list' || !['save', 'load', 'show', 'add', 'delete', 'share', 'import'].includes(action)) return c.reply(playlistsEmbed(me, c.user.username));
+      if (action === 'import') {
+        const link = /https?:\/\/\S+/.exec(name)?.[0];
+        if (!link) return c.reply('Give me a playlist link to import, like a Spotify, YouTube or SoundCloud playlist.', true);
+        name = name.replace(link, '').trim();
+        await c.wait(say('searching'));
+        const found = await find(link, requester).catch(() => null);
+        if (!found?.tracks.length) return c.reply('Great Sage: could not read that playlist.');
+        const saved = savePlaylist(me, name || found.name || 'Imported', found.tracks.map(songOfTrack));
+        return c.reply(`${say('predator', { n: saved.songs.length })} Saved as **${saved.name}** (code \`${saved.code}\`). Play it with \`${config.prefix} pl load ${saved.name}\`.`);
+      }
+      if (!name) return c.reply('Which playlist? Give me its name.', true);
+      if (action === 'save') {
+        if (!player?.queue.current) return c.reply('Nothing is playing, so there is nothing to save yet.', true);
+        const saved = savePlaylist(me, name, songsOfQueue(player));
+        return c.reply(`${saved.replaced ? 'Updated' : 'Saved'} **${saved.name}** with ${saved.songs.length} songs. Share code \`${saved.code}\`.`);
+      }
+      if (action === 'add') {
+        if (!player?.queue.current) return c.reply(say('nothing'), true);
+        const r = addToPlaylist(me, name, songOfTrack(player.queue.current));
+        if (!r) return c.reply(`You have no playlist called **${name}**.`, true);
+        if (r === 'full') return c.reply('That playlist is full (500 songs).', true);
+        return c.reply(`Added **${player.queue.current.info.title}** to **${r.name}** (${r.songs.length} songs).`);
+      }
+      if (action === 'delete') return c.reply(deletePlaylist(me, name) ? `Deleted **${name}**.` : `You have no playlist called **${name}**.`, true);
+      const list = getPlaylist(me, name);
+      if (!list) return c.reply(`No playlist called **${name}** (or with that code).`, true);
+      if (action === 'show') return c.reply({ embeds: [playlistEmbed(list)] });
+      if (action === 'share') return c.reply(`Anyone can load **${list.name}** with \`${config.prefix} pl load ${list.code}\`.`);
+      // load
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      if (!list.songs.length) return c.reply('That playlist is empty.', true);
+      await c.wait(say('searching'));
+      return enqueue(c, lavalink, player, { tracks: list.songs.map((s) => fromWant(s, requester)), name: list.name });
+    },
+  },
+  {
+    name: 'like', aliases: ['fav', 'heart'], about: 'Add the song to your favourites (again to remove it)', needsPlayer: true,
+    async run(c, _l, player) {
+      const added = toggleFavourite(c.user.id, songOfTrack(player!.queue.current!));
+      return c.reply(added ? `Added **${player!.queue.current!.info.title}** to your favourites.` : 'Taken out of your favourites.', true);
+    },
+  },
+  {
+    name: 'favourites', aliases: ['favs', 'liked', 'favorites'], about: 'Your favourite songs',
+    args: [{ name: 'play', kind: 'text', about: 'Type play to queue them all', choices: ['show', 'play'] }],
+    async run(c, lavalink, player) {
+      if ((c.str('play') ?? '').toLowerCase() !== 'play') return c.reply(favouritesEmbed(c.user.id, c.user.username));
+      const songs = favourites(c.user.id);
+      if (!songs.length) return c.reply('No favourites yet.', true);
+      const problem = sameVoice(c, player);
+      if (problem) return c.reply(problem, true);
+      await c.wait(say('searching'));
+      const requester: Requester = { id: c.user.id, name: c.user.username };
+      return enqueue(c, lavalink, player, { tracks: songs.map((s) => fromWant(s, requester)), name: 'Favourites' });
+    },
+  },
+  {
+    name: 'history', aliases: ['hist', 'recent'], about: 'Songs you played recently',
+    async run(c) {
+      return c.reply(historyEmbed(c.user.id, c.user.username));
+    },
+  },
+  {
     name: 'help', aliases: ['h', 'commands'], about: 'All commands',
     async run(c) {
       const lines = commands.filter((x) => x.name !== 'help').map((x) => {
@@ -522,6 +598,25 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
     return i.reply({ ...filterPanel(player), flags: MessageFlags.Ephemeral });
   }
+  if (what.startsWith('fav:')) {
+    const [, user, page] = what.split(':');
+    if (user !== i.user.id) return i.reply({ ...favouritesEmbed(i.user.id, i.user.username), flags: MessageFlags.Ephemeral });
+    return i.update(favouritesEmbed(user, i.user.username, Number(page)));
+  }
+  if (what.startsWith('favplay:')) {
+    const songs = favourites(i.user.id);
+    if (!songs.length) return i.reply({ content: 'No favourites yet.', flags: MessageFlags.Ephemeral });
+    const c = interactionCtx(i);
+    const problem = sameVoice(c, player);
+    if (problem) return i.reply({ content: problem, flags: MessageFlags.Ephemeral });
+    await i.deferReply();
+    return enqueue(c, lavalink, player, { tracks: songs.map((s) => fromWant(s, { id: i.user.id, name: i.user.username })), name: 'Favourites' });
+  }
+  if (what === 'like') {
+    if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+    const added = toggleFavourite(i.user.id, songOfTrack(player.queue.current));
+    return i.reply({ content: added ? `Added **${player.queue.current.info.title}** to your favourites.` : 'Taken out of your favourites.', flags: MessageFlags.Ephemeral });
+  }
   if (what.startsWith('q:')) {
     if (!player) return i.update({ components: [] });
     return i.update(queuePage(player, Number(what.slice(2))));
@@ -580,7 +675,7 @@ export async function onPick(i: StringSelectMenuInteraction, lavalink: LavalinkM
   return enqueue(c, lavalink, player, { tracks: [fromWant(option.want, { id: i.user.id, name: i.user.username })] });
 }
 
-function interactionCtx(i: ChatInputCommandInteraction | StringSelectMenuInteraction): Ctx {
+function interactionCtx(i: ChatInputCommandInteraction | StringSelectMenuInteraction | ButtonInteraction): Ctx {
   return {
     guildId: i.guildId!,
     channelId: i.channelId,
@@ -607,4 +702,23 @@ export async function onFilterPick(i: StringSelectMenuInteraction, lavalink: Lav
   const vc = (i.member as GuildMember | null)?.voice?.channelId;
   if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
   return i.update(await onFilterControl(player, 'tt:fx', i.values[0]));
+}
+
+// loading a playlist from the list menu, or replaying from history
+export async function onLibraryPick(i: StringSelectMenuInteraction, lavalink: LavalinkManager) {
+  const c = interactionCtx(i);
+  const player = lavalink.getPlayer(c.guildId);
+  const problem = sameVoice(c, player);
+  if (problem) return i.reply({ content: problem, flags: MessageFlags.Ephemeral });
+  const requester: Requester = { id: i.user.id, name: i.user.username };
+  if (i.customId.startsWith('tt:plload:')) {
+    const list = getPlaylist(i.user.id, i.values[0]);
+    if (!list?.songs.length) return i.reply({ content: 'That playlist is gone or empty.', flags: MessageFlags.Ephemeral });
+    await i.deferReply();
+    return enqueue(c, lavalink, player, { tracks: list.songs.map((s) => fromWant(s, requester)), name: list.name });
+  }
+  const song = recent(i.customId.split(':')[2])[Number(i.values[0])];
+  if (!song) return i.reply({ content: 'That one is not in the history anymore.', flags: MessageFlags.Ephemeral });
+  await i.deferReply();
+  return enqueue(c, lavalink, player, { tracks: [fromWant(song, requester)] });
 }

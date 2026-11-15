@@ -70,6 +70,7 @@ export function cardButtons(player: Player, off = false) {
       b('lyrics', 'Lyrics'),
       b('filters', 'Filters'),
     ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(b('like', 'Like', ButtonStyle.Success)),
   ];
 }
 
