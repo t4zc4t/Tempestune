@@ -36,8 +36,9 @@ call npm install --no-audit --no-fund --loglevel=error || (echo npm install fail
 call npm run build --silent || (echo Build failed & pause & exit /b 1)
 
 echo [3/5] Starting lavalink...
-start "Tempestune main node" /min cmd /c lavalink\run.cmd main
-if /i "%YOUTUBE%"=="on" start "Tempestune youtube node" /min cmd /c lavalink\run.cmd youtube
+call "%~dp0stop.cmd"
+start "Tempestune main node" /min cmd /c ""%~dp0lavalink\run.cmd" main"
+if /i "%YOUTUBE%"=="on" start "Tempestune youtube node" /min cmd /c ""%~dp0lavalink\run.cmd" youtube"
 
 echo [4/5] Waiting for the main node...
 for /l %%i in (1,1,90) do (
@@ -50,6 +51,6 @@ exit /b 1
 
 :ready
 echo [5/5] Starting the bot...
-start "Tempestune bot" /min cmd /c "for /l %%n in () do (node --env-file=.env dist\index.js & echo bot stopped, starting again in 5 seconds... & timeout /t 5 /nobreak >nul)"
-echo Tempestune is running. Close the minimised windows to stop it.
+start "Tempestune bot" /min cmd /c "for /l %%n in () do (node --env-file="%~dp0.env" "%~dp0dist\index.js" & echo bot stopped, starting again in 5 seconds... & timeout /t 5 /nobreak >nul)"
+echo Tempestune is running. Run stop.cmd to stop it.
 timeout /t 5 >nul
