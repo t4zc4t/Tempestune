@@ -55,6 +55,23 @@ export async function searchSoundCloud(query: string, limit = 10): Promise<Relay
     }));
 }
 
+// youtube search through yt-dlp, the same cheap list as soundcloud
+export async function searchYouTube(query: string, limit = 10): Promise<RelayHit[]> {
+  const raw = await run(['--flat-playlist', '-J', '--no-warnings', `ytsearch${limit}:${query}`], 30_000);
+  const entries: any[] = JSON.parse(raw).entries ?? [];
+  return entries
+    .filter((e) => e.url && e.duration && e.live_status !== 'is_live')
+    .map((e) => ({
+      title: e.title,
+      author: e.channel ?? e.uploader ?? 'YouTube',
+      url: e.url.startsWith('http') ? e.url : `https://www.youtube.com/watch?v=${e.id}`,
+      duration: Math.round(e.duration * 1000),
+      artwork: e.id ? `https://i.ytimg.com/vi/${e.id}/hqdefault.jpg` : undefined,
+    }));
+}
+
+const isYouTube = (url: string) => /youtube\.com\/|youtu\.be\//i.test(url);
+
 const keyOf = (url: string) => url.replace(/^https?:\/\//, '').replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
 const busy = new Map<string, Promise<string>>();
 
@@ -76,7 +93,8 @@ export function relay(url: string): Promise<string> {
   // ffmpeg only repairs the container (soundcloud sends fragmented mp4), the audio is never re-encoded
   const job = run(
     [
-      '-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio',
+      // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
+      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node'] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
       '--ffmpeg-location', ffmpeg,
       '--no-playlist', '--no-progress', '--no-warnings', '--no-part',
       '-P', `temp:${cache}tmp`,
@@ -144,12 +162,12 @@ export function startRelay() {
 
 // a soundcloud/bandcamp link as a list of tracks: one for a track, many for sets and albums
 export async function listOf(url: string): Promise<{ name?: string; hits: RelayHit[] }> {
-  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', '--no-playlist-reverse', url], 60_000));
+  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', ...(isYouTube(url) ? ['--js-runtimes', 'node'] : []), url], 60_000));
   const art = (x: any) => [...(x.thumbnails ?? [])].reverse().find((t: any) => (t.width ?? 0) >= 300)?.url ?? x.thumbnail;
   const hit = (e: any): RelayHit => ({
     title: e.title ?? 'Unknown title',
     author: e.uploader ?? e.artist ?? j.uploader ?? '',
-    url: e.webpage_url ?? e.url,
+    url: e.webpage_url ?? (e.url?.startsWith('http') ? e.url : `https://www.youtube.com/watch?v=${e.id}`),
     duration: Math.round((e.duration ?? 0) * 1000),
     artwork: art(e) ?? art(j),
   });
