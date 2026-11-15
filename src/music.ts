@@ -24,29 +24,31 @@ export const youtubeUp = () => config.youtube && !!node('youtube')?.connected;
 // youtube needs its own node, everything else plays anywhere
 export const pickNode = () => (youtubeUp() ? 'youtube' : 'main');
 
+// straight to lavalink's rest api: the client's own search refuses our local relay links
+// on a node without soundcloud, even though lavalink plays them fine
 async function loadOne(on: LavalinkNode, query: string, requester: Requester) {
-  const res = await on.search({ query }, requester);
-  const track = res.tracks?.[0];
-  if (!track?.encoded) throw new Error(`nothing loaded for ${query}`);
-  return track;
+  const res = await on.request(`/loadtracks?identifier=${encodeURIComponent(query)}`);
+  const data = res?.loadType === 'track' ? res.data : res?.loadType === 'search' ? res.data?.[0] : res?.loadType === 'playlist' ? res.data?.tracks?.[0] : null;
+  if (!data?.encoded) throw new Error(res?.loadType === 'error' ? res.data?.message ?? 'load failed' : `nothing loaded for ${query}`);
+  return manager.utils.buildTrack(data, requester);
 }
 
 const nearest = <T>(items: T[], len: (x: T) => number, want?: number) =>
   want ? [...items].sort((a, b) => Math.abs(len(a) - want) - Math.abs(len(b) - want)).find((x) => Math.abs(len(x) - want) < 8000) ?? items[0] : items[0];
 
 // finds the actual audio for a queued song, on whatever node the player is on
-async function findAudio(want: Want, player: Player, requester: Requester): Promise<string> {
-  if (want.how === 'relay' && want.uri) return (await loadOne(player.node, await relay(want.uri), requester)).encoded!;
-  if (want.how === 'youtube' && want.uri && player.node.id === 'youtube') return (await loadOne(player.node, want.uri, requester)).encoded!;
+async function findAudio(want: Want, player: Player, requester: Requester): Promise<Track> {
+  if (want.how === 'relay' && want.uri) return loadOne(player.node, await relay(want.uri), requester);
+  if (want.how === 'youtube' && want.uri && player.node.id === 'youtube') return loadOne(player.node, want.uri, requester);
   // metadata only (spotify, apple, deezer) or a youtube song that failed: soundcloud first, it is the reliable one
   const q = `${want.author} ${want.title}`.trim();
   const hits = await searchSoundCloud(q, 8).catch(() => []);
   const hit = nearest(hits, (h) => h.duration, want.duration);
-  if (hit) return (await loadOne(player.node, await relay(hit.url), requester)).encoded!;
+  if (hit) return loadOne(player.node, await relay(hit.url), requester);
   if (player.node.id === 'youtube' && !want.noYoutube) {
     const res = await player.node.search({ query: q, source: 'ytmsearch' }, requester).catch(() => null);
     const best = nearest(res?.tracks ?? [], (t) => t.info.duration, want.duration);
-    if (best?.encoded) return best.encoded;
+    if (best?.encoded) return best;
   }
   throw new Error(`no audio found for ${q}`);
 }
@@ -57,10 +59,21 @@ export function queued(want: Want, requester: Requester): UnresolvedTrack {
     requester,
   );
   t.userData = { want: { ...want } as Record<string, any> };
-  const base = t.resolve.bind(t);
+  // swaps this placeholder for the real track in place, so the queue keeps the same object
   t.resolve = async (player: Player) => {
-    t.encoded = await findAudio(want, player, requester);
-    await base(player);
+    const real = await findAudio(want, player, requester);
+    for (const sym of Object.getOwnPropertySymbols(t)) delete (t as any)[sym];
+    for (const prop of Object.getOwnPropertyNames(t)) delete (t as any)[prop];
+    for (const sym of Object.getOwnPropertySymbols(real)) Object.defineProperty(t, sym, { configurable: true, value: (real as any)[sym] });
+    Object.assign(t, real, { requester: real.requester ?? requester });
+    // keep the names we know, the relay file itself has none
+    const info = (t as unknown as Track).info;
+    if (want.title) info.title = want.title;
+    if (want.author) info.author = want.author;
+    if (want.artwork) info.artworkUrl = want.artwork;
+    if (want.link) info.uri = want.link;
+    if (want.duration && !info.duration) info.duration = want.duration;
+    (t as unknown as Track).userData = { ...(real.userData ?? {}), want: { ...want } as Record<string, any> };
   };
   return t;
 }
