@@ -11,3 +11,6 @@ lavalink/*/logs
 lavalink/jre
 lavalink/version.txt
 lavalink/tools
+lavalink/versions.json
+cache
+tray/settings.json
