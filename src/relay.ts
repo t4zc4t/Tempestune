@@ -106,8 +106,22 @@ export function relay(url: string): Promise<string> {
   return job;
 }
 
+// at most two downloads at once, so a big playlist doesn't hammer youtube (and get the pc rate limited)
+let running = 0;
+const waiting: (() => void)[] = [];
+async function slot<T>(job: () => Promise<T>): Promise<T> {
+  if (running >= 2) await new Promise<void>((r) => waiting.push(r));
+  running++;
+  try {
+    return await job();
+  } finally {
+    running--;
+    waiting.shift()?.();
+  }
+}
+
 const fetchTo = (url: string, key: string, retry: boolean) =>
-  run(
+  slot(() => run(
     [
       // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
       ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node'] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
@@ -119,7 +133,7 @@ const fetchTo = (url: string, key: string, retry: boolean) =>
       url,
     ],
     5 * 60_000,
-  );
+  ));
 
 // oldest files go first once the cache is over its size
 function trim() {
