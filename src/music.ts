@@ -17,6 +17,7 @@ export interface Want extends SongInfo {
   source: string;
   uri?: string;
   noYoutube?: boolean; // set after youtube already failed for this song
+  song?: { title: string; author: string; duration?: number }; // the real song, when we worked it out (for lyrics)
 }
 
 let manager: LavalinkManager;
@@ -40,6 +41,7 @@ interface Match {
   hit: RelayHit;
   source: string;
   notOriginal: boolean;
+  song?: Canon;
 }
 
 const ytSearch = (q: string) =>
@@ -55,13 +57,13 @@ async function matchSong(canon: Canon, asked: string, noYoutube = false): Promis
   if (youtubeOn() && !noYoutube) {
     const hit = best(await ytSearch(`${q} audio`), asked, canon);
     if (hit) {
-      const m = { hit, source: 'youtube', notOriginal: offOriginal(hit, asked, canon) };
+      const m: Match = { hit, source: 'youtube', notOriginal: offOriginal(hit, asked, canon), song: canon };
       if (!m.notOriginal) return m;
       backup = m;
     }
   }
   const hit = best(await searchSoundCloud(q, 10).catch(() => []), asked, canon);
-  const sc = hit ? { hit, source: 'soundcloud', notOriginal: offOriginal(hit, asked, canon) } : null;
+  const sc: Match | null = hit ? { hit, source: 'soundcloud', notOriginal: offOriginal(hit, asked, canon), song: canon } : null;
   if (sc && (!sc.notOriginal || !backup)) return sc;
   return backup ?? sc;
 }
@@ -108,6 +110,7 @@ export function queued(want: Want, requester: Requester): UnresolvedTrack {
     });
     for (const sym of Object.getOwnPropertySymbols(t)) delete (t as any)[sym];
     for (const prop of Object.getOwnPropertyNames(t)) delete (t as any)[prop];
+    const file = real.info.uri; // the relay url, kept for the loudness lookup
     for (const sym of Object.getOwnPropertySymbols(real)) Object.defineProperty(t, sym, { configurable: true, value: (real as any)[sym] });
     Object.assign(t, real, { requester: real.requester ?? requester });
     // keep the names we know, the relay file itself has none
@@ -117,7 +120,7 @@ export function queued(want: Want, requester: Requester): UnresolvedTrack {
     if (want.artwork) info.artworkUrl = want.artwork;
     if (want.link) info.uri = want.link;
     if (want.duration && !info.duration) info.duration = want.duration;
-    (t as unknown as Track).userData = { ...(real.userData ?? {}), want: { ...want } as Record<string, any> };
+    (t as unknown as Track).userData = { ...(real.userData ?? {}), file, want: { ...want } as Record<string, any> };
   };
   return t;
 }
@@ -165,7 +168,7 @@ export async function find(input: string, requester: Requester): Promise<Found> 
   // plain words
   const m = await matchWords(text);
   if (!m) return { tracks: [] };
-  return { tracks: [queued(fromHit(m.hit, m.source), requester)], notOriginal: m.notOriginal };
+  return { tracks: [queued({ ...fromHit(m.hit, m.source), song: m.song }, requester)], notOriginal: m.notOriginal };
 }
 
 // when a youtube download fails, look for the same song on soundcloud instead (once)

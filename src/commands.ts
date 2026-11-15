@@ -7,6 +7,7 @@ import { cardButtons, cardEmbed, clock, dropCard, refreshCard, SLIME } from './c
 import { config } from './config.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
+import { applyPreset, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics } from './sound.js';
 import { find, fromSong, fromWant, pickNode, searchAll, stationWant, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
 
@@ -22,7 +23,7 @@ export interface Ctx {
   str(name: string): string | null;
   int(name: string): number | null;
   // first answer; quiet ones are only seen by the person (slash) or vanish after a bit (prefix)
-  reply(p: string | Payload, quiet?: boolean): Promise<unknown>;
+  reply(p: string | Payload, quiet?: boolean): Promise<Message | null>;
   // for slow commands: shows the bot is working, then the answer replaces it
   wait(note?: string): Promise<void>;
 }
@@ -363,6 +364,44 @@ const commands: Command[] = [
     },
   },
   {
+    name: 'lyrics', aliases: ['ly'], about: 'Lyrics for the song, following along as it plays', needsPlayer: true,
+    async run(c, _l, player) {
+      await c.wait(say('searching'));
+      const problem = await showLyrics(player!, (p) => c.reply(p));
+      return problem ? c.reply(problem) : null;
+    },
+  },
+  {
+    name: 'filter', aliases: ['fx', 'filters', 'effect'], about: 'Sound filters: bassboost, nightcore, vaporwave, 8d, karaoke and more', needsPlayer: true,
+    args: [{ name: 'name', kind: 'text', about: 'Filter to use (leave empty for the panel)', choices: Object.keys(PRESETS) }],
+    async run(c, _l, player) {
+      const name = c.str('name')?.toLowerCase();
+      if (name && !PRESETS[name]) return c.reply(`Filters: ${Object.keys(PRESETS).map((k) => `\`${k}\``).join(' ')}`, true);
+      if (name) await applyPreset(player!, name);
+      return c.reply(filterPanel(player!));
+    },
+  },
+  {
+    name: 'speed', aliases: ['sp'], about: 'Play faster or slower (0.5 to 2)', needsPlayer: true,
+    args: [{ name: 'times', kind: 'text', about: 'Like 1.25 or 0.8', required: true }],
+    async run(c, _l, player) {
+      const v = Number(c.str('times'));
+      if (!Number.isFinite(v) || v < 0.5 || v > 2) return c.reply('Give me a speed from 0.5 to 2, like 1.25.', true);
+      await setSpeed(player!, v);
+      return c.reply(`Speed set to ${v}x.`, true);
+    },
+  },
+  {
+    name: 'pitch', aliases: ['pt'], about: 'Higher or lower voice (0.5 to 2)', needsPlayer: true,
+    args: [{ name: 'times', kind: 'text', about: 'Like 1.2 or 0.9', required: true }],
+    async run(c, _l, player) {
+      const v = Number(c.str('times'));
+      if (!Number.isFinite(v) || v < 0.5 || v > 2) return c.reply('Give me a pitch from 0.5 to 2, like 1.2.', true);
+      await setPitch(player!, v);
+      return c.reply(`Pitch set to ${v}x.`, true);
+    },
+  },
+  {
     name: 'help', aliases: ['h', 'commands'], about: 'All commands',
     async run(c) {
       const lines = commands.filter((x) => x.name !== 'help').map((x) => {
@@ -452,6 +491,7 @@ export async function onMessage(m: Message, lavalink: LavalinkManager) {
       else sent = await m.reply({ ...payload, allowedMentions: { repliedUser: false } });
       // short notices tidy themselves away in busy channels
       if (quiet && sent) setTimeout(() => sent?.delete().catch(() => {}), 15_000);
+      return sent;
     },
     async wait(note) {
       if (!sent) sent = await m.reply({ content: note ?? '…', allowedMentions: { repliedUser: false } });
@@ -465,6 +505,23 @@ export async function onMessage(m: Message, lavalink: LavalinkManager) {
 export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) {
   const player = lavalink.getPlayer(i.guildId!);
   const what = i.customId.slice(3);
+  if (what.startsWith('fx')) {
+    if (!player?.queue.current) return i.update({ components: [] });
+    const vc = (i.member as GuildMember | null)?.voice?.channelId;
+    if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+    return i.update(await onFilterControl(player, i.customId));
+  }
+  if (what === 'lyrics') {
+    if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+    await i.deferReply();
+    const problem = await showLyrics(player, (p) => i.editReply(p).catch(() => null));
+    if (problem) await i.editReply(problem);
+    return;
+  }
+  if (what === 'filters') {
+    if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+    return i.reply({ ...filterPanel(player), flags: MessageFlags.Ephemeral });
+  }
   if (what.startsWith('q:')) {
     if (!player) return i.update({ components: [] });
     return i.update(queuePage(player, Number(what.slice(2))));
@@ -533,11 +590,21 @@ function interactionCtx(i: ChatInputCommandInteraction | StringSelectMenuInterac
     int: (n) => (i.isChatInputCommand() ? i.options.getInteger(n) : null),
     async reply(p, quiet) {
       const body = typeof p === 'string' ? { content: p } : p;
-      if (i.deferred || i.replied) await i.editReply(body);
-      else await i.reply(quiet ? { ...body, flags: MessageFlags.Ephemeral } : body);
+      if (i.deferred || i.replied) return i.editReply(body).catch(() => null);
+      const res = await i.reply({ ...body, ...(quiet ? { flags: MessageFlags.Ephemeral } : {}), withResponse: true }).catch(() => null);
+      return (res?.resource?.message as Message | null | undefined) ?? null;
     },
     async wait() {
       if (!i.deferred && !i.replied) await i.deferReply();
     },
   };
+}
+
+// the filter menu
+export async function onFilterPick(i: StringSelectMenuInteraction, lavalink: LavalinkManager) {
+  const player = lavalink.getPlayer(i.guildId!);
+  if (!player?.queue.current) return i.update({ components: [] });
+  const vc = (i.member as GuildMember | null)?.voice?.channelId;
+  if (!vc || vc !== player.voiceChannelId) return i.reply({ content: say('otherVoice'), flags: MessageFlags.Ephemeral });
+  return i.update(await onFilterControl(player, 'tt:fx', i.values[0]));
 }

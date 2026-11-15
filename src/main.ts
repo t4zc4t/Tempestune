@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, isCard, showCard } from './card.js';
-import { definitions, onAutocomplete, onButton, onCommand, onMessage, onPick, queuePage } from './commands.js';
+import { definitions, onAutocomplete, onButton, onCommand, onFilterPick, onMessage, onPick, queuePage } from './commands.js';
+import { normalise, stopLyrics } from './sound.js';
 import { config } from './config.js';
 import { log } from './log.js';
 import { fallbackFor, notePlayed, related, useManager, warmNext, type Requester } from './music.js';
@@ -42,6 +43,7 @@ lavalink.nodeManager
 lavalink
   .on('trackStart', (player, track) => {
     if (track) notePlayed(player, track.info.title);
+    normalise(player).catch(() => {});
     showCard(client, player);
     warmNext(player);
   })
@@ -78,7 +80,10 @@ lavalink
     const ch = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
     if (ch?.isSendable()) ch.send(say('queueEnd')).catch(() => {});
   })
-  .on('playerDestroy', (player) => dropCard(player.guildId));
+  .on('playerDestroy', (player) => {
+    dropCard(player.guildId);
+    stopLyrics(player.guildId);
+  });
 
 client.on('raw', (d) => lavalink.sendRawData(d));
 
@@ -122,6 +127,7 @@ client.on('interactionCreate', async (i) => {
     if (i.isAutocomplete()) return void (await onAutocomplete(i));
     if (i.isChatInputCommand() && i.inGuild()) await onCommand(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
+    else if (i.isStringSelectMenu() && i.customId === 'tt:fx' && i.inGuild()) await onFilterPick(i, lavalink);
     else if (i.isButton() && i.customId.startsWith('tt:') && i.inGuild()) {
       const id = i.customId;
       if (id === 'tt:queue') {
@@ -130,7 +136,8 @@ client.on('interactionCreate', async (i) => {
         return void (await i.reply({ ...queuePage(player, 0), flags: MessageFlags.Ephemeral }));
       }
       // old cards lose their buttons, queue pages can be flicked through anywhere
-      if (!id.startsWith('tt:q:') && id !== 'tt:shuffle' && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
+      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id === 'tt:shuffle';
+      if (!anywhere && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
       await onButton(i, lavalink);
     }
   } catch (e) {
