@@ -1,5 +1,5 @@
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, PermissionFlagsBits, RoleSelectMenuBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, PermissionFlagsBits, RoleSelectMenuBuilder, StringSelectMenuBuilder,
   type GuildMember,
 } from 'discord.js';
 import type { Player } from 'lavalink-client';
@@ -10,7 +10,6 @@ import { db, json } from './db.js';
 
 export interface Settings {
   djRole?: string;
-  voteSkip: boolean;
   stay: boolean; // 24/7
   stayVoice?: string;
   stayText?: string;
@@ -18,9 +17,13 @@ export interface Settings {
   normalise: boolean;
   requestChannel?: string;
   requestMessage?: string;
+  perUser: number; // songs one person can have waiting, 0 for no limit
+  playlistCap: number; // most songs taken from one playlist, 0 for no limit
+  recapChannel?: string; // weekly most-played card
+  lastRecap?: string;
 }
 
-const DEFAULTS: Settings = { voteSkip: false, stay: false, autoplay: false, normalise: true };
+const DEFAULTS: Settings = { stay: false, autoplay: false, normalise: true, perUser: 0, playlistCap: 0 };
 const cache = new Map<string, Settings>();
 
 export function settingsOf(guild: string): Settings {
@@ -59,9 +62,51 @@ export const listeners = (m: GuildMember, player: Player) => {
   return vc?.isVoiceBased() ? vc.members.filter((x) => !x.user.bot).size : 1;
 };
 
-export function settingsPanel(guild: string) {
+export const isDj = (m: GuildMember) => {
+  const s = settingsOf(m.guild.id);
+  return isManager(m) || (!!s.djRole && m.roles.cache.has(s.djRole));
+};
+
+const limit = (n: number, unit: string) => (n ? `${n} ${unit}` : 'no limit');
+
+export function settingsPanel(guild: string, page = 0) {
   const s = settingsOf(guild);
   const onoff = (v: boolean) => (v ? 'on' : 'off');
+  const b = (id: string, label: string, on: boolean) =>
+    new ButtonBuilder().setCustomId(`tt:set:${id}`).setLabel(label).setStyle(on ? ButtonStyle.Success : ButtonStyle.Secondary);
+  const nav = (to: number, label: string) => new ButtonBuilder().setCustomId(`tt:set:page:${to}`).setLabel(label).setStyle(ButtonStyle.Primary);
+
+  if (page === 1) {
+    const e = new EmbedBuilder()
+      .setColor(SLIME)
+      .setAuthor({ name: 'Server settings · queue and recap' })
+      .setDescription(
+        [
+          `**Songs per person:** ${limit(s.perUser, 'waiting at once')}`,
+          `**Playlist size:** ${limit(s.playlistCap, 'songs taken from one playlist')}`,
+          '-# Admins and the DJ role skip both limits.',
+          `**Weekly recap:** ${s.recapChannel ? `<#${s.recapChannel}> · every Monday, the week's most played` : 'off'}`,
+        ].join('\n'),
+      );
+    const pick = (id: string, placeholder: string, values: number[], now: number, unit: string) =>
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder().setCustomId(`tt:set:${id}`).setPlaceholder(placeholder).addOptions(
+          values.map((v) => ({ label: v ? `${v} ${unit}` : 'No limit', value: String(v), default: v === now })),
+        ),
+      );
+    return {
+      embeds: [e],
+      components: [
+        pick('peruser', 'Songs per person', [0, 5, 10, 20, 30, 50], s.perUser, 'songs each'),
+        pick('plcap', 'Playlist size', [0, 25, 50, 100, 200], s.playlistCap, 'songs'),
+        new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(
+          new ChannelSelectMenuBuilder().setCustomId('tt:set:recap').setPlaceholder('Weekly recap channel (leave empty for off)').setChannelTypes(ChannelType.GuildText).setMinValues(0).setMaxValues(1),
+        ),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(nav(0, 'Back')),
+      ],
+    };
+  }
+
   const e = new EmbedBuilder()
     .setColor(SLIME)
     .setAuthor({ name: 'Server settings' })
@@ -76,8 +121,6 @@ export function settingsPanel(guild: string) {
       ].join('\n'),
     )
     .setFooter({ text: '24/7 stays in the voice channel you are in when you turn it on' });
-  const b = (id: string, label: string, on: boolean) =>
-    new ButtonBuilder().setCustomId(`tt:set:${id}`).setLabel(label).setStyle(on ? ButtonStyle.Success : ButtonStyle.Secondary);
   return {
     embeds: [e],
     components: [
@@ -85,6 +128,7 @@ export function settingsPanel(guild: string) {
         b('stay', `24/7: ${onoff(s.stay)}`, s.stay),
         b('auto', `Autoplay: ${onoff(s.autoplay)}`, s.autoplay),
         b('norm', `Even volume: ${onoff(s.normalise)}`, s.normalise),
+        nav(1, 'Queue limits and recap'),
       ),
       new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(
         new RoleSelectMenuBuilder().setCustomId('tt:set:dj').setPlaceholder('DJ role (leave empty for none)').setMinValues(0).setMaxValues(1),
