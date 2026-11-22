@@ -2,6 +2,7 @@ import type { LavalinkManager, LavalinkNode, Player, Track, UnresolvedTrack } fr
 import { config } from './config.js';
 import { isApple, isDeezer, isSpotify, readDeezer, readSpotify, type SongInfo } from './links.js';
 import { log } from './log.js';
+import { notice } from './alerts.js';
 import { best, catalogue, guessSong, norm, offOriginal, type Canon } from './rank.js';
 import { findStations, searchJamendo, type Station } from './extras.js';
 import { listOf, relay, searchSoundCloud, searchYouTube, type RelayHit } from './relay.js';
@@ -122,6 +123,7 @@ export function queued(want: Want, requester: Requester): UnresolvedTrack {
       // youtube refused it: same song from soundcloud instead
       if (want.noYoutube || (want.source !== 'youtube' && want.how !== 'find')) throw e;
       log(`youtube failed for ${want.title}, trying soundcloud:`, e instanceof Error ? e.message.split('\n')[0] : e);
+      notice('youtube', e instanceof Error ? e.message.split('\n')[0] : String(e));
       return findAudio({ ...want, how: 'find', noYoutube: true }, player, requester);
     });
     for (const sym of Object.getOwnPropertySymbols(t)) delete (t as any)[sym];
@@ -271,21 +273,41 @@ export async function related(player: Player, requester: Requester, seed?: Track
   if (!id) return null;
   // youtube's own mix for that song: a list of related tracks
   const mix = await listOf(`https://www.youtube.com/watch?v=${id}&list=RD${id}`).catch(() => null);
-  const played: string[] = player.get('played') ?? [];
-  const seen = new Set(played);
-  const pick = mix?.hits.find((h) => {
+  const seen = new Set<string>([...((player.get('played') as string[] | undefined) ?? []), ...recentlyPlayed(player.guildId)]);
+  const good = (mix?.hits ?? []).filter((h) => {
     const key = norm(h.title).slice(0, 40);
     return !seen.has(key) && h.duration > 90_000 && h.duration < 8 * 60_000 && !offOriginal(h, '', undefined);
   });
+  // a bit of variety: one of the first few good ones, not always the top of the mix
+  const pick = good[Math.floor(Math.random() * Math.min(4, good.length))];
   if (!pick) return null;
   return queued({ ...fromHit(pick, 'youtube'), source: 'youtube' }, requester);
 }
 
+// everything played in a server over the last hour, kept across stops and restarts of the player
+const lastHour = new Map<string, { key: string; at: number }[]>();
+const HOUR = 60 * 60_000;
+function recentlyPlayed(guild: string) {
+  const now = Date.now();
+  const list = (lastHour.get(guild) ?? []).filter((x) => now - x.at < HOUR);
+  lastHour.set(guild, list);
+  return list.map((x) => x.key);
+}
+
+// songs people picked themselves, the anchor for autoplay so it doesn't wander off
+export function noteSeed(player: Player, track: Track) {
+  const seeds: Track[] = player.get('seeds') ?? [];
+  player.set('seeds', [track, ...seeds.filter((t) => t.info.title !== track.info.title)].slice(0, 5));
+}
+
 // remembers what played, so autoplay doesn't loop back to it
 export function notePlayed(player: Player, title: string) {
+  const key = norm(title).slice(0, 40);
   const played: string[] = player.get('played') ?? [];
-  played.unshift(norm(title).slice(0, 40));
+  played.unshift(key);
   player.set('played', played.slice(0, 100));
+  recentlyPlayed(player.guildId);
+  lastHour.get(player.guildId)!.push({ key, at: Date.now() });
 }
 
 // autoplay, ready ahead: while the last song plays, the next related one is found and fetched,
@@ -297,7 +319,11 @@ export async function prepareAutoplay(player: Player, requester: Requester) {
   if (player.get('autoSeed') === seed) return; // already working on this one
   player.set('autoSeed', seed);
   player.set('autoNext', null);
-  const next = await related(player, requester, current).catch(() => null);
+  // after an autoplay song, go back to one of the songs people actually asked for
+  const seeds: Track[] = player.get('seeds') ?? [];
+  const byBot = (current.requester as Requester | undefined)?.id === requester.id;
+  const from = byBot && seeds.length ? seeds[Math.floor(Math.random() * seeds.length)] : current;
+  const next = await related(player, requester, from).catch(() => null);
   if (!next || player.get('autoSeed') !== seed) return;
   const ok = await next.resolve(player).then(() => true, () => false);
   if (ok && player.get('autoSeed') === seed) player.set('autoNext', next);
