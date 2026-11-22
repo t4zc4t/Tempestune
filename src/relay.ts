@@ -227,3 +227,12 @@ export function gainFor(url?: string): number | null {
   if (!Number.isFinite(lufs)) return null;
   return Math.min(1.6, Math.max(0.45, 10 ** ((-14 - lufs) / 20)));
 }
+
+// youtube changes often, so the standalone yt-dlp updates itself once a day, between downloads
+export async function updateYtdlp() {
+  if (!existsSync(tools + (win ? 'yt-dlp.exe' : 'yt-dlp'))) return;
+  if (busy.size) return void setTimeout(updateYtdlp, 10 * 60_000).unref();
+  const out = await run(['-U'], 3 * 60_000).catch((e) => `update failed: ${e instanceof Error ? e.message : e}`);
+  const line = out.trim().split('\n').filter(Boolean).pop() ?? '';
+  log(`yt-dlp: ${line}`);
+}
