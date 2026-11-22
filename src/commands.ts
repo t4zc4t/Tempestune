@@ -9,8 +9,9 @@ import { ic, icon } from './icons.js';
 import { log } from './log.js';
 import { didYouMean, findStations, songFromLine, suggestSongs } from './extras.js';
 import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist, historyEmbed, playlistEmbed, playlistsEmbed, recent, savePlaylist, songOfTrack, songsOfQueue, toggleFavourite } from './library.js';
-import { canControl, isManager, listeners, settingsOf, settingsPanel, updateSettings } from './settings.js';
-import { applyPreset, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics } from './sound.js';
+import { canControl, isDj, isManager, listeners, settingsOf, settingsPanel, updateSettings } from './settings.js';
+import { applyEq, applyPreset, changeEq, eqPanel, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics, type Eq } from './sound.js';
+import { statsEmbed, type Period } from './stats.js';
 import { find, fromSong, fromWant, pickNode, prepareAutoplay, searchAll, stationWant, workingStation, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
 import { FEATURED, featured, featuredSongs } from './featured.js';
@@ -124,7 +125,25 @@ async function enqueue(c: Ctx, lavalink: LavalinkManager, player: Player | undef
     player.set('normalise', s.normalise);
   }
   if (!player.connected) await player.connect();
-  const lead = intro ? `${intro}\n` : '';
+  let lead = intro ? `${intro}\n` : '';
+
+  // queue limits from the settings, so one person can't flood the queue
+  const s = settingsOf(c.guildId);
+  if (!isDj(c.member)) {
+    if (s.playlistCap && found.tracks.length > s.playlistCap) {
+      lead += `-# Only the first ${s.playlistCap} songs, the most this server takes from one playlist.\n`;
+      found.tracks = found.tracks.slice(0, s.playlistCap);
+    }
+    if (s.perUser) {
+      const mine = player.queue.tracks.filter((t) => (t.requester as Requester | undefined)?.id === c.user.id).length;
+      const room = s.perUser - mine;
+      if (room <= 0) return c.reply(`You already have ${mine} songs waiting, the most this server allows. Let a few play first.`, true);
+      if (found.tracks.length > room) {
+        lead += `-# Only ${room} more, you can have ${s.perUser} songs waiting at once.\n`;
+        found.tracks = found.tracks.slice(0, room);
+      }
+    }
+  }
 
   // the first song is fetched right away, so a dead one says so instead of failing quietly later
   const first = found.tracks[0];
@@ -492,12 +511,28 @@ const commands: Command[] = [
     },
   },
   ...FEATURED.map((f): Command => ({
-    name: f.key, aliases: f.key === 'tensura' ? ['slime', 'rimuru'] : ['animehits'], about: `Play ${f.name.toLowerCase()} (${f.songs.length} songs)`,
+    name: f.key, aliases: f.aliases ?? [], about: `Play ${f.name.toLowerCase()} (${f.songs.length} songs)`,
     args: [{ name: 'order', kind: 'text', about: 'In order or shuffled', choices: ['in order', 'shuffled'] }],
     async run(c, lavalink, player) {
       return playFeatured(c, lavalink, player, f.key, /shuf|mix|random/i.test(c.str('order') ?? ''));
     },
   })),
+  {
+    name: 'eq', aliases: ['equalizer', 'equaliser'], about: 'Your own bass, mid and treble, saved for every song you add',
+    async run(c, _l, player) {
+      const live = (player?.queue.current?.requester as Requester | undefined)?.id === c.user.id;
+      return c.reply(eqPanel(c.user.id, c.member.displayName, live), true);
+    },
+  },
+  {
+    name: 'stats', aliases: ['top', 'mostplayed'], about: 'Most played songs and top requesters in this server',
+    args: [{ name: 'period', kind: 'text', about: 'How far back', choices: ['week', 'month', 'all'] }],
+    async run(c) {
+      const raw = (c.str('period') ?? 'week').toLowerCase();
+      const period: Period = raw.startsWith('m') ? 'month' : raw.startsWith('a') ? 'all' : 'week';
+      return c.reply({ embeds: [statsEmbed(c.guildId, c.member.guild.name, period, c.member.client.user.id)] });
+    },
+  },
   {
     name: 'like', aliases: ['fav', 'heart'], about: 'Add the song to your favourites (again to remove it)', needsPlayer: true,
     async run(c, _l, player) {
@@ -526,7 +561,7 @@ const commands: Command[] = [
     },
   },
   {
-    name: 'settings', aliases: ['setup', 'config'], about: 'Server settings: DJ role, 24/7, autoplay, even volume, request channel (Manage Server)',
+    name: 'settings', aliases: ['setup', 'config'], about: 'Server settings: DJ role, 24/7, request channel, limits, weekly recap (Manage Server)',
     async run(c) {
       if (!isManager(c.member)) return c.reply('Only people with Manage Server can change the settings.', true);
       return c.reply(settingsPanel(c.guildId));
@@ -595,31 +630,35 @@ const HELP: HelpPage[] = [
   {
     title: 'Sound and lyrics', icon: 'filters',
     intro: 'Shape how it sounds and sing along.',
-    cmds: [['lyrics', 'ly'], ['filter', 'fx bassboost'], ['speed', 'sp 1.25'], ['pitch', 'pt 0.9']],
+    cmds: [['lyrics', 'ly'], ['filter', 'fx bassboost'], ['eq', 'eq'], ['speed', 'sp 1.25'], ['pitch', 'pt 0.9']],
     tips: [
       `Filters: ${Object.keys(PRESETS).join(', ')}.`,
       'Lyrics follow the song line by line when synced lyrics exist.',
+      'Your eq is yours alone: it plays on the songs you add, on top of any filter, and stays saved.',
     ],
   },
   {
     title: 'Playlists and favourites', icon: 'like',
     intro: 'Keep the songs you love and play them back in one go.',
-    cmds: [['tensura', 'tensura shuffled'], ['anime', 'anime'], ['playlist', 'pl save road trip'], ['like', 'fav'], ['favourites', 'favs'], ['history', 'hist']],
+    cmds: [['tensura', 'tensura shuffled'], ['anime', 'anime'], ['aot', 'aot'], ['jjk', 'jjk shuffled'], ['demonslayer', 'kny'], ['playlist', 'pl save road trip'], ['like', 'fav'], ['favourites', 'favs'], ['history', 'hist']],
     tips: [
       'Playlist actions: `list`, `save <name>`, `load <name or code>`, `show`, `add`, `delete`, `share`, `import <link>`.',
       'Share a playlist and anyone can load it with its 6 letter code.',
-      'The ready-made ones (`tensura`, `anime`) also load with `{p} pl load tensura`.',
+      'The ready-made ones (`tensura`, `anime`, `aot`, `jjk`, `demonslayer`) also load with `{p} pl load <name>`.',
     ],
   },
   {
     title: 'Server', icon: 'settings',
     intro: 'For admins (Manage Server). Everything is set from one panel.',
-    cmds: [['settings', 'setup']],
+    cmds: [['settings', 'setup'], ['stats', 'top month']],
     tips: [
       '**DJ role:** with one set, only DJs, admins and the song\'s requester can change the music. Without one, everyone can.',
       '**24/7:** stays in the voice channel even when the queue ends or everyone leaves.',
       '**Request channel:** any message there is played as a song request and then tidied away.',
       '**Even volume:** evens out loud and quiet songs.',
+      '**Queue limits:** cap how many songs one person can have waiting, and how much of a playlist gets taken.',
+      "**Weekly recap:** every Monday the week's most played songs and top requesters go to a channel you pick.",
+      '-# I also leave a voice channel after 2 minutes with nobody in it, unless 24/7 is on.',
     ],
   },
 ];
@@ -816,6 +855,13 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
     return i.reply({ ...filterPanel(player), flags: MessageFlags.Ephemeral });
   }
+  if (what.startsWith('eq:')) {
+    const [, band, by] = what.split(':');
+    changeEq(i.user.id, band as keyof Eq | 'reset', Number(by) || 0);
+    const live = !!player?.queue.current && (player.queue.current.requester as Requester | undefined)?.id === i.user.id;
+    if (live) await applyEq(player!);
+    return i.update(eqPanel(i.user.id, (i.member as GuildMember | null)?.displayName ?? i.user.username, live));
+  }
   if (what.startsWith('fav:')) {
     const [, user, page] = what.split(':');
     if (user !== i.user.id) return i.reply({ ...favouritesEmbed(i.user.id, i.user.username), flags: MessageFlags.Ephemeral });
@@ -967,13 +1013,24 @@ async function requestMessage(m: Message<true>, text: string, lavalink: Lavalink
 
 // ---------- the settings panel ----------
 
-export async function onSettings(i: ButtonInteraction | RoleSelectMenuInteraction | ChannelSelectMenuInteraction, lavalink: LavalinkManager) {
+export async function onSettings(i: ButtonInteraction | RoleSelectMenuInteraction | ChannelSelectMenuInteraction | StringSelectMenuInteraction, lavalink: LavalinkManager) {
   const member = i.member as GuildMember;
   if (!isManager(member)) return i.reply({ content: 'Only people with Manage Server can change the settings.', flags: MessageFlags.Ephemeral });
   const gid = i.guildId!;
   const s = settingsOf(gid);
   const what = i.customId.split(':')[2];
-  if (what === 'vote') updateSettings(gid, { voteSkip: !s.voteSkip });
+  if (what === 'page') return i.update(settingsPanel(gid, Number(i.customId.split(':')[3]) || 0));
+  if (what === 'peruser' && i.isStringSelectMenu()) updateSettings(gid, { perUser: Number(i.values[0]) || 0 });
+  if (what === 'plcap' && i.isStringSelectMenu()) updateSettings(gid, { playlistCap: Number(i.values[0]) || 0 });
+  if (what === 'recap' && i.isChannelSelectMenu()) {
+    const id = i.values[0];
+    if (id) {
+      const ch = await i.client.channels.fetch(id).catch(() => null);
+      if (!ch?.isSendable()) return i.reply({ content: 'I cannot send messages there.', flags: MessageFlags.Ephemeral });
+    }
+    updateSettings(gid, { recapChannel: id || undefined });
+  }
+  const second = ['peruser', 'plcap', 'recap'].includes(what);
   if (what === 'auto') updateSettings(gid, { autoplay: !s.autoplay });
   if (what === 'norm') updateSettings(gid, { normalise: !s.normalise });
   if (what === 'stay') {
@@ -1002,7 +1059,7 @@ export async function onSettings(i: ButtonInteraction | RoleSelectMenuInteractio
       if (player?.queue.current) await refreshCard(player);
     }
   }
-  return i.update(settingsPanel(gid));
+  return i.update(settingsPanel(gid, second ? 1 : 0));
 }
 
 // 24/7: sit in the saved voice channel even with nothing playing

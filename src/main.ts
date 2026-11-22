@@ -7,12 +7,15 @@ import { definitions, onAutocomplete, onButton, onHelp, onCommand, onFilterPick,
 import { allSettings, settingsOf } from './settings.js';
 import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './keep.js';
 import { noteHistory, songOfTrack } from './library.js';
-import { normalise, stopLyrics } from './sound.js';
+import { applyEq, normalise, stopLyrics } from './sound.js';
+import { notePlay, weeklyRecap } from './stats.js';
 import { config } from './config.js';
 import { syncIcons } from './icons.js';
 import { log } from './log.js';
-import { fallbackFor, notePlayed, prepareAutoplay, related, takeAutoplay, useManager, warmNext, type Requester } from './music.js';
+import { fallbackFor, notePlayed, noteSeed, prepareAutoplay, related, takeAutoplay, useManager, warmNext, type Requester } from './music.js';
 import { startRelay } from './relay.js';
+import { notice, useAlerts } from './alerts.js';
+import { dailyJobs, showStatus, watchVoice } from './upkeep.js';
 import { say } from './sage.js';
 
 const nodes: LavalinkNodeOptions[] = [
@@ -44,7 +47,10 @@ lavalink.nodeManager
     // after a lavalink restart (or the bot's own), bring back whatever was playing
     if (client.isReady()) setTimeout(() => restoreAll(lavalink, client.user!.id), 3000);
   })
-  .on('disconnect', (node, reason) => log(`node ${node.id} dropped (${reason.reason ?? reason.code})`))
+  .on('disconnect', (node, reason) => {
+    log(`node ${node.id} dropped (${reason.reason ?? reason.code})`);
+    notice('node');
+  })
   .on('error', (node, error) => log(`node ${node.id} error: ${error.message}`));
 
 lavalink
@@ -55,6 +61,7 @@ lavalink
       notePlayed(player, track.info.title);
       const who = (track.requester as Requester | undefined)?.id;
       if (who && who !== client.user?.id) {
+        noteSeed(player, track);
         try {
           noteHistory(who, player.guildId, songOfTrack(track));
         } catch (e) {
@@ -62,8 +69,11 @@ lavalink
         }
       }
     }
+    if (track) notePlay(player.guildId, track, (track.requester as Requester | undefined)?.id ?? client.user!.id);
+    applyEq(player).catch(() => {});
     normalise(player).catch(() => {});
     showCard(client, player);
+    showStatus(client, lavalink);
     warmNext(player);
     saveQueue(player);
     // the last song in the queue: get the autoplay one ready now, so there is no wait later
@@ -100,6 +110,7 @@ lavalink
       }
     }
     await dropCard(player.guildId);
+    showStatus(client, lavalink);
     const ch = player.textChannelId ? await client.channels.fetch(player.textChannelId).catch(() => null) : null;
     if (ch?.isSendable() && settingsOf(player.guildId).requestChannel !== player.textChannelId) ch.send(say('queueEnd')).catch(() => {});
     // leave after a few quiet minutes, unless the server has 24/7 on
@@ -112,33 +123,13 @@ lavalink
   })
   .on('playerDestroy', (player, reason) => {
     dropCard(player.guildId);
+    setTimeout(() => showStatus(client, lavalink), 500);
     stopLyrics(player.guildId);
     // stopped on purpose: forget it. broken by a node: keep it for when lavalink is back
     if (!keepOnDestroy(reason)) forgetQueue(player.guildId);
   });
 
 client.on('raw', (d) => lavalink.sendRawData(d));
-
-// leave once everyone else has left the voice channel for a couple of minutes
-const lonely = new Map<string, NodeJS.Timeout>();
-client.on('voiceStateUpdate', (before, after) => {
-  const gid = (before.guild ?? after.guild).id;
-  const player = lavalink.getPlayer(gid);
-  if (!player?.voiceChannelId) return;
-  const channel = client.channels.cache.get(player.voiceChannelId);
-  if (!channel?.isVoiceBased()) return;
-  const people = channel.members.filter((m) => !m.user.bot).size;
-  if (people > 0 || settingsOf(gid).stay) {
-    clearTimeout(lonely.get(gid));
-    lonely.delete(gid);
-  } else if (!lonely.has(gid)) {
-    lonely.set(gid, setTimeout(() => {
-      lonely.delete(gid);
-      dropCard(gid);
-      lavalink.getPlayer(gid)?.destroy().catch(() => {});
-    }, 2 * 60_000));
-  }
-});
 
 // slash commands per server, so new ones show up straight away
 const register = (g: Guild) => g.commands.set(definitions).catch((e) => log(`commands for ${g.name} failed`, e));
@@ -162,6 +153,8 @@ client.once('clientReady', async (c) => {
     if (s.stay) await stayIn(lavalink, guild);
   }
   log(`${c.user.tag} is up, youtube ${config.youtube ? 'on' : 'off'}`);
+  showStatus(c, lavalink);
+  weeklyRecap(c);
   // the node usually connects before discord is ready, so restore here as well
   setTimeout(() => restoreAll(lavalink, c.user.id), 4000);
 });
@@ -178,7 +171,7 @@ client.on('interactionCreate', async (i) => {
     else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId === 'tt:fx' && i.inGuild()) await onFilterPick(i, lavalink);
     else if (i.isStringSelectMenu() && /^tt:(plload|hist):/.test(i.customId) && i.inGuild()) await onLibraryPick(i, lavalink);
-    else if ((i.isButton() || i.isRoleSelectMenu() || i.isChannelSelectMenu()) && i.customId.startsWith('tt:set:') && i.inGuild()) await onSettings(i, lavalink);
+    else if ((i.isButton() || i.isRoleSelectMenu() || i.isChannelSelectMenu() || i.isStringSelectMenu()) && i.customId.startsWith('tt:set:') && i.inGuild()) await onSettings(i, lavalink);
     else if (i.isButton() && i.customId.startsWith('tt:') && i.inGuild()) {
       const id = i.customId;
       if (id === 'tt:queue') {
@@ -187,7 +180,7 @@ client.on('interactionCreate', async (i) => {
         return void (await i.reply({ ...queuePage(player, 0), flags: MessageFlags.Ephemeral }));
       }
       // old cards lose their buttons, queue pages can be flicked through anywhere
-      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id === 'tt:shuffle';
+      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id.startsWith('tt:eq:') || id === 'tt:shuffle';
       if (!anywhere && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
       await onButton(i, lavalink);
     }
@@ -213,7 +206,10 @@ setInterval(() => {
   }
 }, 15_000).unref();
 
-process.on('unhandledRejection', (e) => log('unhandled', e));
+process.on('unhandledRejection', (e) => {
+  log('unhandled', e);
+  notice('crash', e instanceof Error ? e.message : String(e));
+});
 client.on('error', (e) => log('discord error', e));
 
 // a fresh build replaces the running one: exit and let the tray start it again
@@ -225,5 +221,8 @@ watchFile(self, { interval: 3000 }, (now, before) => {
   setTimeout(() => process.exit(0), 2000);
 });
 
+useAlerts(client);
+watchVoice(client, lavalink);
+dailyJobs();
 startRelay();
 client.login(config.token);
