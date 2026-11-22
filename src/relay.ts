@@ -72,6 +72,11 @@ export async function searchYouTube(query: string, limit = 10): Promise<RelayHit
 
 const isYouTube = (url: string) => /youtube\.com\/|youtu\.be\//i.test(url);
 
+// a spare account's cookies get past youtube's "confirm you're not a bot" check.
+// optional: drop the exported file at cookies/youtube.txt and it's picked up on the next song
+const cookies = root + 'cookies/youtube.txt';
+const ytAuth = () => (existsSync(cookies) ? ['--cookies', cookies] : []);
+
 const keyOf = (url: string) => url.replace(/^https?:\/\//, '').replace(/[^a-z0-9]+/gi, '_').slice(0, 120);
 const busy = new Map<string, Promise<string>>();
 
@@ -124,7 +129,7 @@ const fetchTo = (url: string, key: string, retry: boolean) =>
   slot(() => run(
     [
       // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
-      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node'] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
+      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node', ...ytAuth()] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
       ...(retry ? ['--extractor-args', 'youtube:player_client=tv,web_safari'] : []),
       '--ffmpeg-location', ffmpeg,
       '--no-playlist', '--no-progress', '--no-warnings', '--no-part',
@@ -185,7 +190,7 @@ export function startRelay() {
 // a soundcloud/bandcamp link as a list of tracks: one for a track, many for sets and albums
 export async function listOf(url: string): Promise<{ name?: string; hits: RelayHit[] }> {
   // big playlists stop at 300 songs, plenty for one session
-  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', '--playlist-end', '300', ...(isYouTube(url) ? ['--js-runtimes', 'node'] : []), url], 60_000));
+  const j = JSON.parse(await run(['--flat-playlist', '-J', '--no-warnings', '--playlist-end', '300', ...(isYouTube(url) ? ['--js-runtimes', 'node', ...ytAuth()] : []), url], 60_000));
   const art = (x: any) => [...(x.thumbnails ?? [])].reverse().find((t: any) => (t.width ?? 0) >= 300)?.url ?? x.thumbnail;
   const hit = (e: any): RelayHit => ({
     title: e.title ?? 'Unknown title',

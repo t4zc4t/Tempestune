@@ -52,7 +52,7 @@ Optional settings in `.env`:
 
 ## Notes
 
-Using YouTube this way goes against YouTube's terms, which is why it can be switched off. When YouTube refuses a song, the bot looks for the same song on SoundCloud.
+Using YouTube this way goes against YouTube's terms, which is why it can be switched off. If YouTube starts asking to confirm you're not a bot, export the cookies of a spare account to `cookies/youtube.txt` (the folder is ignored by git) and the bot uses them for YouTube. When YouTube refuses a song, the bot looks for the same song on SoundCloud.
 
 ## Thanks
 
