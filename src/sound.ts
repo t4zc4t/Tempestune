@@ -1,6 +1,7 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, StringSelectMenuBuilder, type Message } from 'discord.js';
-import type { Player, Track } from 'lavalink-client';
+import { EQList, type EQBand, type Player, type Track } from 'lavalink-client';
 import { SLIME } from './card.js';
+import { db } from './db.js';
 import { lyricsFor, splitTitle, type Lyrics } from './extras.js';
 import { log } from './log.js';
 import { gainFor } from './relay.js';
@@ -29,7 +30,6 @@ export async function applyPreset(player: Player, name: string) {
   const f = player.filterManager;
   await f.resetFilters();
   switch (name) {
-    case 'bassboost': await f.setEQPreset('BassboostMedium'); break;
     case 'nightcore': await f.toggleNightcore(); break;
     case 'vaporwave': await f.toggleVaporwave(); break;
     case '8d': await f.toggleRotation(0.2); break;
@@ -37,16 +37,74 @@ export async function applyPreset(player: Player, name: string) {
     case 'soft': await f.toggleLowPass(20); break;
     case 'tremolo': await f.toggleTremolo(); break;
     case 'vibrato': await f.toggleVibrato(); break;
-    case 'rock': await f.setEQPreset('Rock'); break;
-    case 'pop': await f.setEQPreset('Pop'); break;
-    case 'electronic': await f.setEQPreset('Electronic'); break;
-    case 'classic': await f.setEQPreset('Classic'); break;
-    case 'fullsound': await f.setEQPreset('FullSound'); break;
   }
   player.set('filter', name);
   player.set('speed', 1);
   player.set('pitch', 1);
+  await applyEq(player);
   await normalise(player);
+}
+
+// ---------- everyone's own equalizer: bass, mid and treble, saved per person ----------
+
+// presets that are just an eq, so they can be mixed with a person's own levels
+const PRESET_EQ: Record<string, keyof typeof EQList> = {
+  bassboost: 'BassboostMedium', rock: 'Rock', pop: 'Pop', electronic: 'Electronic', classic: 'Classic', fullsound: 'FullSound',
+};
+export interface Eq { bass: number; mid: number; treble: number }
+const FLAT: Eq = { bass: 0, mid: 0, treble: 0 };
+const BANDS: Record<keyof Eq, number[]> = { bass: [0, 1, 2, 3], mid: [4, 5, 6, 7, 8], treble: [9, 10, 11, 12, 13, 14] };
+const STEP = 0.05; // one level, levels go from -4 to +6
+export const EQ_RANGE = { min: -4, max: 6 };
+
+export const eqOf = (user?: string): Eq =>
+  (user ? (db.prepare('SELECT bass, mid, treble FROM eq WHERE user = ?').get(user) as unknown as Eq | undefined) : undefined) ?? { ...FLAT };
+
+export function changeEq(user: string, band: keyof Eq | 'reset', by = 0) {
+  const now = band === 'reset' ? { ...FLAT } : { ...eqOf(user), [band]: Math.max(EQ_RANGE.min, Math.min(EQ_RANGE.max, eqOf(user)[band] + by)) };
+  if (!now.bass && !now.mid && !now.treble) db.prepare('DELETE FROM eq WHERE user = ?').run(user);
+  else db.prepare('INSERT INTO eq (user, bass, mid, treble) VALUES (?, ?, ?, ?) ON CONFLICT (user) DO UPDATE SET bass = excluded.bass, mid = excluded.mid, treble = excluded.treble').run(user, now.bass, now.mid, now.treble);
+  return now;
+}
+
+// the preset's eq plus the eq of whoever asked for the song that is playing
+export async function applyEq(player: Player) {
+  const base = PRESET_EQ[(player.get('filter') as string) ?? 'off'];
+  const who = (player.queue.current?.requester as { id?: string } | undefined)?.id;
+  const mine = eqOf(who);
+  const gains = new Array<number>(15).fill(0);
+  for (const b of base ? EQList[base] : []) gains[b.band] = b.gain;
+  for (const k of Object.keys(BANDS) as (keyof Eq)[]) for (const band of BANDS[k]) gains[band] += mine[k] * STEP;
+  const bands: EQBand[] = gains.map((gain, band) => ({ band, gain: Math.max(-0.25, Math.min(1, Math.round(gain * 1000) / 1000)) }));
+  if (bands.every((b) => b.gain === 0)) await player.filterManager.clearEQ().catch(() => {});
+  else await player.filterManager.setEQ(bands).catch(() => {});
+}
+
+const bar = (n: number) => '▰'.repeat(n - EQ_RANGE.min) + '▱'.repeat(EQ_RANGE.max - n);
+
+export function eqPanel(user: string, name: string, live: boolean) {
+  const q = eqOf(user);
+  const sign = (n: number) => (n > 0 ? `+${n}` : String(n));
+  const e = new EmbedBuilder()
+    .setColor(SLIME)
+    .setAuthor({ name: `${name}'s equalizer` })
+    .setDescription(
+      [
+        `**Bass** \`${bar(q.bass)}\` ${sign(q.bass)}`,
+        `**Mid** \`${bar(q.mid)}\` ${sign(q.mid)}`,
+        `**Treble** \`${bar(q.treble)}\` ${sign(q.treble)}`,
+        '',
+        live ? '-# Playing now, since this song is yours.' : '-# Saved. It plays on every song you add, on top of any filter.',
+      ].join('\n'),
+    );
+  const b = (id: string, label: string, style = ButtonStyle.Secondary) => new ButtonBuilder().setCustomId(`tt:eq:${id}`).setLabel(label).setStyle(style);
+  return {
+    embeds: [e],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(b('bass:-1', 'Bass −'), b('bass:1', 'Bass +'), b('mid:-1', 'Mid −'), b('mid:1', 'Mid +')),
+      new ActionRowBuilder<ButtonBuilder>().addComponents(b('treble:-1', 'Treble −'), b('treble:1', 'Treble +'), b('reset:0', 'Flat', ButtonStyle.Danger)),
+    ],
+  };
 }
 
 export async function setSpeed(player: Player, speed: number) {
