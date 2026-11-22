@@ -9,17 +9,23 @@ A Discord music bot with a calm slime in charge and a very thorough assistant in
 - Spotify, Apple Music and Deezer links are only read for the song names, the audio is found on YouTube or SoundCloud
 - Search menu across every source, with source and length filters, suggestions while typing, "did you mean" and search by a line from the lyrics
 - Queue with pages, move, remove, shuffle, loop, seek and skip to
-- Autoplay of related songs when the queue runs out
+- Autoplay of related songs when the queue runs out, ready before the last song ends, with no repeats within the hour
 - Live synced lyrics, filters (bassboost, nightcore, vaporwave, 8D, karaoke and more), speed and pitch, and even volume between loud and quiet uploads
+- Your own bass, mid and treble with `eq`, saved and played on every song you add
 - Saved playlists you can share with a code, playlist import from links, favourites and history
-- DJ role, vote skip, 24/7 mode and a request channel with its own player
+- Ready-made playlists: `tensura`, `anime`, `aot`, `jjk` and `demonslayer`
+- DJ role, 24/7 mode and a request channel with its own player. Whoever queued a song can skip or stop it, everyone else votes
+- Queue limits per person and per playlist, `stats` for the most played songs and a weekly recap card
+- Leaves the voice channel after 2 minutes with nobody in it
+- Shows what is playing as its status
 - The queue survives restarts of the bot, Lavalink or the whole PC
+- Daily database backups (the last 7 are kept in `backups/`), yt-dlp updates itself, and the owner gets a DM when Lavalink or YouTube keeps failing
 
 Slash commands and a text prefix both work: `/play faded` or `tt p faded` (or mention the bot). `tt help` lists everything.
 
 ## Running it (Windows)
 
-You need Node.js 24 or newer and Git. Everything else is downloaded on the first start: Java, Lavalink, yt-dlp and ffmpeg.
+You need Node.js 26 or newer and Git. Everything else is downloaded on the first start: Java, Lavalink, yt-dlp and ffmpeg.
 
 1. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN`, `CLIENT_ID` and a long random `LAVALINK_PASSWORD`
 2. Double-click `boot.cmd`
