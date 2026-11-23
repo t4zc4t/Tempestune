@@ -33,7 +33,7 @@ async function tellOwner(text: string) {
   try {
     const app = await client.application.fetch();
     const owner = app.owner && 'ownerId' in app.owner ? await client.users.fetch(app.owner.ownerId!) : app.owner;
-    if (owner && 'send' in owner) await owner.send(`Great Sage: ${text}`);
+    if (owner && 'send' in owner) await owner.send(`《Great Sage》 ${text}`);
   } catch (e) {
     log('could not dm the owner', e instanceof Error ? e.message : e);
   }

@@ -19,63 +19,103 @@ export const clock = (ms: number) => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 };
 
-const bar = (pos: number, len: number, size = 18) => {
-  const at = len > 0 ? Math.min(size - 1, Math.round((pos / len) * (size - 1))) : 0;
-  return '━'.repeat(at) + '●' + '─'.repeat(size - 1 - at);
+// magicule gauge
+const bar = (pos: number, len: number, size = 15) => {
+  const at = len > 0 ? Math.min(size, Math.round((pos / len) * size)) : size;
+  return '▰'.repeat(at) + '▱'.repeat(size - at);
 };
 
 const cut = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 export function cardEmbed(player: Player) {
   const t = player.queue.current as Track | null;
-  if (!t) return new EmbedBuilder().setColor(SLIME).setDescription('Nothing is playing right now.');
+  if (!t) return new EmbedBuilder().setColor(SLIME).setAuthor({ name: '《Great Sage》 Nothing is playing.' });
   const want = t.userData?.want as { source?: string } | undefined;
-  const source = SOURCES[want?.source ?? t.info.sourceName] ?? t.info.sourceName;
+  const src = want?.source ?? t.info.sourceName;
+  const source = (SOURCES[src] ?? src) + (src === 'jiosaavn' ? ' 320k' : '');
   const len = t.info.isStream ? 0 : t.info.duration;
-  const time = t.info.isStream ? '`LIVE`' : `\`${clock(player.position)} / ${clock(len)}\``;
+  const time = t.info.isStream ? 'LIVE' : `${clock(player.position)} / ${clock(len)}`;
+  const requester = (t.requester as { id?: string } | undefined)?.id;
+  const loop = player.repeatMode === 'track' ? 'Looping song' : player.repeatMode === 'queue' ? 'Looping queue' : '';
+  const info = [
+    requester ? `Summoned by <@${requester}>` : '',
+    source,
+    `Vol ${player.volume}`,
+    player.get('autoplay') ? 'Autoplay on' : '',
+    loop,
+  ].filter(Boolean).join(' · ');
   const next = player.queue.tracks[0];
-  const requester = (t.requester as any)?.id;
+  const more = player.queue.tracks.length - 1;
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: player.paused ? 'Paused' : 'Now playing' })
+    .setAuthor({ name: player.paused ? '《Great Sage》 Playback suspended.' : '《Great Sage》 Analysis complete.' })
     .setTitle(cut(t.info.title, 256))
-    .setDescription(`${cut(t.info.author || 'Unknown artist', 200)}\n\n${len ? bar(player.position, len) : bar(1, 1)}  ${time}`)
-    .addFields(
-      { name: 'Requested by', value: requester ? `<@${requester}>` : '—', inline: true },
-      { name: 'Volume', value: `${player.volume}%`, inline: true },
-      { name: 'Up next', value: next ? cut(next.info.title, 60) : 'Nothing yet', inline: true },
-    )
-    .setFooter({ text: `${source} · ${player.queue.tracks.length} in queue${player.repeatMode === 'off' ? '' : ` · looping ${player.repeatMode === 'track' ? 'song' : 'queue'}`}` });
+    .setDescription(
+      [
+        cut(t.info.author || 'Unknown artist', 200),
+        '',
+        `${bar(player.position, len)}  \`${time}\``,
+        `-# ${info}`,
+        next ? `-# Next › ${cut(next.info.title, 60)}${more > 0 ? ` +${more}` : ''}` : '',
+      ].filter((l, i) => l || i === 1).join('\n'),
+    );
   const link = t.info.uri && /^https?:\/\//.test(t.info.uri) && !t.info.uri.includes('127.0.0.1') ? t.info.uri : null;
   if (link) e.setURL(link);
   if (t.info.artworkUrl) e.setThumbnail(t.info.artworkUrl);
   return e;
 }
 
+// icon-only buttons; until the icons are uploaded they fall back to a short label
+const button = (id: string, emoji: string, label: string, style = ButtonStyle.Secondary, off = false) => {
+  const btn = new ButtonBuilder().setCustomId(`tt:${id}`).setStyle(style).setDisabled(off);
+  const e = icon(emoji);
+  return e ? btn.setEmoji(e) : btn.setLabel(label);
+};
+
 export function cardButtons(player: Player, off = false) {
-  const b = (id: string, label: string, emoji: string, style = ButtonStyle.Secondary) => {
-    const btn = new ButtonBuilder().setCustomId(`tt:${id}`).setLabel(label).setStyle(style).setDisabled(off);
-    const e = icon(emoji);
-    return e ? btn.setEmoji(e) : btn;
-  };
-  const loop = player.repeatMode === 'track' ? 'Loop: song' : player.repeatMode === 'queue' ? 'Loop: queue' : 'Loop: off';
+  const looping = player.repeatMode !== 'off';
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      b('pause', player.paused ? 'Resume' : 'Pause', player.paused ? 'play' : 'pause', ButtonStyle.Primary),
-      b('skip', 'Skip', 'skip'),
-      b('stop', 'Stop', 'stop', ButtonStyle.Danger),
-      b('loop', loop, player.repeatMode === 'track' ? 'loopone' : 'loop'),
-      b('queue', 'Queue', 'queue'),
+      button('pause', player.paused ? 'play' : 'pause', player.paused ? 'Resume' : 'Pause', ButtonStyle.Primary, off),
+      button('skip', 'skip', 'Skip', ButtonStyle.Secondary, off),
+      button('stop', 'stop', 'Stop', ButtonStyle.Secondary, off),
+      button('loop', player.repeatMode === 'track' ? 'loopone' : 'loop', 'Loop', looping ? ButtonStyle.Success : ButtonStyle.Secondary, off),
+      button('like', 'like', 'Like', ButtonStyle.Secondary, off),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      b('vdown', 'Vol', 'voldown'),
-      b('vup', 'Vol', 'volup'),
-      b('auto', player.get('autoplay') ? 'Autoplay: on' : 'Autoplay: off', 'autoplay'),
-      b('lyrics', 'Lyrics', 'lyrics'),
-      b('filters', 'Filters', 'filters'),
+      button('vdown', 'voldown', 'Vol -', ButtonStyle.Secondary, off),
+      button('vup', 'volup', 'Vol +', ButtonStyle.Secondary, off),
+      button('lyrics', 'lyrics', 'Lyrics', ButtonStyle.Secondary, off),
+      button('queue', 'queue', 'Queue', ButtonStyle.Secondary, off),
+      button('skills', 'skills', 'Skills', ButtonStyle.Secondary, off),
     ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(b('like', 'Like', 'like', ButtonStyle.Success)),
   ];
+}
+
+// the private panel behind the skills button
+export function skillsPanel(player: Player) {
+  const auto = !!player.get('autoplay');
+  const e = new EmbedBuilder()
+    .setColor(SLIME)
+    .setAuthor({ name: '《Great Sage》 Skills' })
+    .setDescription(
+      [
+        `Autoplay is **${auto ? 'on' : 'off'}**${auto ? ', related songs keep coming when the queue runs out' : ''}.`,
+        '-# Autoplay · shuffle · filters · equalizer · Predator (save this song to a playlist)',
+      ].join('\n'),
+    );
+  return {
+    embeds: [e],
+    components: [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        button('sk:auto', 'autoplay', 'Autoplay', auto ? ButtonStyle.Success : ButtonStyle.Secondary),
+        button('sk:shuffle', 'shuffle', 'Shuffle'),
+        button('sk:filters', 'filters', 'Filters'),
+        button('sk:eq', 'eq', 'Equalizer'),
+        button('sk:save', 'save', 'Predator'),
+      ),
+    ],
+  };
 }
 
 interface Live {
@@ -91,9 +131,9 @@ export const setBoard = (guildId: string, message: Message | null) => (message ?
 export function idleBoard() {
   return new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: 'Tempestune' })
+    .setAuthor({ name: '《Great Sage》 Standing by.' })
     .setTitle('Nothing is playing')
-    .setDescription('Type a song name or paste a link in this channel and I will play it.\nJoin a voice channel first.');
+    .setDescription('Type a song name or paste a link here and I will play it.\n-# Join a voice channel first.');
 }
 
 async function updateBoard(player: Player | null, guildId: string) {

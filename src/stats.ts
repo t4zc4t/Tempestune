@@ -32,7 +32,7 @@ export function statsEmbed(guild: string, guildName: string, period: Period, bot
   const total = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(ms), 0) AS ms FROM plays WHERE guild = ? AND at >= ?').get(guild, from) as { n: number; ms: number };
 
   const when = period === 'all' ? 'since I started counting' : `in the last ${days} days`;
-  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: title ?? `${guildName} · most played` });
+  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: title ?? `《Great Sage》 ${guildName} · most played` });
   if (!total.n) return e.setDescription(`Nothing played ${when} yet.`);
   const hours = total.ms / 3_600_000;
   e.setDescription(`**${total.n}** songs, about **${hours < 10 ? hours.toFixed(1) : Math.round(hours)} hours** of music ${when}.`)
@@ -62,7 +62,7 @@ export function weeklyRecap(client: Client) {
       const ch = g ? await client.channels.fetch(s.recapChannel).catch(() => null) : null;
       updateSettings(guild, { lastRecap: key });
       if (!g || !ch?.isSendable()) continue;
-      await ch.send({ embeds: [statsEmbed(guild, g.name, 'week', client.user!.id, 'Great Sage: this week in music')] }).catch((e) => log('recap failed', e));
+      await ch.send({ embeds: [statsEmbed(guild, g.name, 'week', client.user!.id, '《Great Sage》 This week in music')] }).catch((e) => log('recap failed', e));
     }
   };
   setInterval(() => void tick(), 10 * 60_000).unref();

@@ -87,7 +87,7 @@ export function eqPanel(user: string, name: string, live: boolean) {
   const sign = (n: number) => (n > 0 ? `+${n}` : String(n));
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: `${name}'s equalizer` })
+    .setAuthor({ name: `《Great Sage》 ${name}'s equalizer` })
     .setDescription(
       [
         `**Bass** \`${bar(q.bass)}\` ${sign(q.bass)}`,
@@ -131,7 +131,7 @@ export function filterPanel(player: Player) {
   const pitch = (player.get('pitch') as number) ?? 1;
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: 'Sound' })
+    .setAuthor({ name: '《Great Sage》 Sound' })
     .setDescription(`**Filter:** ${current} · ${PRESETS[current] ?? ''}\n**Speed:** ${speed.toFixed(2)}x · **Pitch:** ${pitch.toFixed(2)}x\n**Even volume:** ${player.get('normalise') === false ? 'off' : 'on'}`);
   const menu = new StringSelectMenuBuilder()
     .setCustomId('tt:fx')
@@ -184,7 +184,7 @@ export function stopLyrics(guildId: string) {
 }
 
 function lyricsEmbed(t: Track, lyr: Lyrics, at: number) {
-  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: 'Lyrics' }).setTitle(`${lyr.title} · ${lyr.author}`.slice(0, 256)).setFooter({ text: 'Lyrics from LRCLIB' });
+  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: '《Great Sage》 Lyrics' }).setTitle(`${lyr.title} · ${lyr.author}`.slice(0, 256)).setFooter({ text: 'Lyrics from LRCLIB' });
   if (!lyr.synced.length) return e.setDescription(lyr.plain.slice(0, 3900) || 'No lyrics text.');
   let i = lyr.synced.findIndex((l) => l.at > at) - 1;
   if (i < -1) i = lyr.synced.length - 1;
@@ -202,7 +202,7 @@ export async function showLyrics(player: Player, send: (p: { embeds: EmbedBuilde
   if (!t) return 'Nothing is playing right now.';
   const song = songOf(t);
   const lyr = await lyricsFor(song.title, song.author, song.duration).catch(() => null);
-  if (!lyr) return `Great Sage: no lyrics found for **${song.title}**.`;
+  if (!lyr) return `《Great Sage》 no lyrics found for **${song.title}**.`;
   stopLyrics(player.guildId);
   const message = await send({ embeds: [lyricsEmbed(t, lyr, player.position)] });
   if (!message || !lyr.synced.length) return null;

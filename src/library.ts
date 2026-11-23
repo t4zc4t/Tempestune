@@ -69,7 +69,7 @@ export function addToPlaylist(owner: string, name: string, song: Song) {
 
 export function playlistsEmbed(owner: string, ownerName: string) {
   const lists = listPlaylists(owner);
-  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: `${ownerName}'s playlists` });
+  const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: `《Great Sage》 ${ownerName}'s playlists` });
   if (!lists.length) return { embeds: [e.setDescription('No playlists yet. Save the current queue with `playlist save <name>`, or import one with `playlist import <link>`.')], components: [] };
   e.setDescription(lists.map((p) => `**${p.name}** · ${p.songs.length} songs · code \`${p.code}\``).join('\n'));
   const menu = new StringSelectMenuBuilder()
@@ -85,7 +85,7 @@ export function playlistEmbed(p: Playlist) {
   const more = p.songs.length > 20 ? `\n…and ${p.songs.length - 20} more` : '';
   return new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: `Playlist · ${p.name}` })
+    .setAuthor({ name: `《Great Sage》 Playlist · ${p.name}` })
     .setDescription((lines.join('\n') || 'Empty.') + more)
     .setFooter({ text: `${p.songs.length} songs · ${clock(total)} · share code ${p.code}` });
 }
@@ -110,7 +110,7 @@ export function favouritesEmbed(user: string, name: string, page = 0) {
   const lines = all.slice(page * 10, page * 10 + 10).map((s, i) => `\`${String(page * 10 + i + 1).padStart(2, ' ')}.\` ${cut(s.title, 55)}${s.author ? ` · ${cut(s.author, 25)}` : ''}`);
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: `${name}'s favourites` })
+    .setAuthor({ name: `《Great Sage》 ${name}'s favourites` })
     .setDescription(lines.join('\n') || 'No favourites yet. Press Like on the player, or use `like` while a song plays.')
     .setFooter({ text: `${all.length} songs · page ${page + 1}/${pages}` });
   const b = (id: string, label: string, off = false, style = ButtonStyle.Secondary) => new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style).setDisabled(off);
@@ -152,7 +152,7 @@ export function historyEmbed(user: string, name: string) {
   };
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: `${name}'s recent songs` })
+    .setAuthor({ name: `《Great Sage》 ${name}'s recent songs` })
     .setDescription(list.map((s, i) => `\`${String(i + 1).padStart(2, ' ')}.\` ${cut(s.title, 55)} · -# ${ago(s.at)}`).join('\n') || 'Nothing played yet.');
   if (!list.length) return { embeds: [e], components: [] };
   const menu = new StringSelectMenuBuilder()

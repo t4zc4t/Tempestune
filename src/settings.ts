@@ -79,7 +79,7 @@ export function settingsPanel(guild: string, page = 0) {
   if (page === 1) {
     const e = new EmbedBuilder()
       .setColor(SLIME)
-      .setAuthor({ name: 'Server settings · queue and recap' })
+      .setAuthor({ name: '《Great Sage》 Settings · queue and recap' })
       .setDescription(
         [
           `**Songs per person:** ${limit(s.perUser, 'waiting at once')}`,
@@ -109,7 +109,7 @@ export function settingsPanel(guild: string, page = 0) {
 
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: 'Server settings' })
+    .setAuthor({ name: '《Great Sage》 Settings' })
     .setDescription(
       [
         `**DJ role:** ${s.djRole ? `<@&${s.djRole}>` : 'none, everyone can control the music'}`,

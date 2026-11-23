@@ -20,19 +20,19 @@ const lines = {
     'Predator: {n} tracks taken in. Nothing goes to waste.',
   ],
   searching: [
-    'Great Sage: analysing your request...',
-    'Great Sage: searching...',
+    '《Great Sage》 analysing your request...',
+    '《Great Sage》 searching...',
   ],
   notFound: [
-    'Great Sage: no result found for that. Try other words?',
-    'Great Sage: nothing matched. Maybe a different spelling?',
+    '《Great Sage》 no result found for that. Try other words?',
+    '《Great Sage》 nothing matched. Maybe a different spelling?',
   ],
   failed: [
-    'Great Sage: that track could not be loaded, skipping it.',
-    'Great Sage: something went wrong with that one. Moving on.',
+    '《Great Sage》 that track could not be loaded, skipping it.',
+    '《Great Sage》 something went wrong with that one. Moving on.',
   ],
   notOriginal: [
-    'Great Sage: the original is not free on SoundCloud, so this is the closest version I found.',
+    '《Great Sage》 the original is not free on SoundCloud, so this is the closest version I found.',
   ],
   djOnly: ['Only the DJ role (or whoever asked for this song) can do that here.'],
   noVoice: ['Join a voice channel first, then call me.'],
@@ -43,7 +43,7 @@ const lines = {
   paused: ['Paused.'],
   resumed: ['Resumed.'],
   queueEnd: ['That was the last track. I will wait here a little.'],
-  nodeDown: ['Great Sage: the audio node is not ready yet, give it a moment.'],
+  nodeDown: ['《Great Sage》 the audio node is not ready yet, give it a moment.'],
 } as const;
 
 export type Moment = keyof typeof lines;
@@ -52,4 +52,4 @@ export const say = (moment: Moment, vars: Record<string, string | number> = {}) 
   pick(lines[moment])
     .replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
     // the sage gets its own little mark once the icons are uploaded
-    .replace(/^Great Sage:/, () => `${ic('sage')}Great Sage:`);
+    .replace(/^《Great Sage》/, () => `${ic('sage')}《Great Sage》`);

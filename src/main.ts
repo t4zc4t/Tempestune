@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, GatewayIntentBits, MessageFlags, type Guild } from 'discord.js';
 import { LavalinkManager, type LavalinkNodeOptions } from 'lavalink-client';
 import { dropCard, idleBoard, isCard, setBoard, showCard } from './card.js';
-import { definitions, onAutocomplete, onButton, onHelp, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
+import { definitions, onAutocomplete, onButton, onHelp, onPredator, onCommand, onFilterPick, onLibraryPick, onMessage, onPick, onSettings, queuePage, stayIn } from './commands.js';
 import { allSettings, settingsOf } from './settings.js';
 import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './keep.js';
 import { noteHistory, songOfTrack } from './library.js';
@@ -168,6 +168,7 @@ client.on('interactionCreate', async (i) => {
     if (i.isAutocomplete()) return void (await onAutocomplete(i));
     if (i.isChatInputCommand() && i.inGuild()) await onCommand(i, lavalink);
     else if ((i.isButton() || i.isStringSelectMenu()) && i.customId.startsWith('tt:help')) await onHelp(i);
+    else if (i.isModalSubmit() && i.customId === 'tt:predator' && i.inGuild()) await onPredator(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId.startsWith('tt:pick:') && i.inGuild()) await onPick(i, lavalink);
     else if (i.isStringSelectMenu() && i.customId === 'tt:fx' && i.inGuild()) await onFilterPick(i, lavalink);
     else if (i.isStringSelectMenu() && /^tt:(plload|hist):/.test(i.customId) && i.inGuild()) await onLibraryPick(i, lavalink);
@@ -180,14 +181,14 @@ client.on('interactionCreate', async (i) => {
         return void (await i.reply({ ...queuePage(player, 0), flags: MessageFlags.Ephemeral }));
       }
       // old cards lose their buttons, queue pages can be flicked through anywhere
-      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id.startsWith('tt:eq:') || id === 'tt:shuffle';
+      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id.startsWith('tt:eq:') || id.startsWith('tt:sk:') || id === 'tt:shuffle';
       if (!anywhere && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
       await onButton(i, lavalink);
     }
   } catch (e) {
     log('interaction failed', e);
     if (i.isRepliable() && !i.replied) {
-      const content = 'Great Sage: something went wrong there. It is in the log.';
+      const content = '《Great Sage》 something went wrong there. It is in the log.';
       (i.deferred ? i.editReply(content) : i.reply({ content, flags: MessageFlags.Ephemeral })).catch(() => {});
     }
   }

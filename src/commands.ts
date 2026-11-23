@@ -1,9 +1,9 @@
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, SlashCommandBuilder, StringSelectMenuBuilder,
-  type AutocompleteInteraction, type ButtonInteraction, type ChannelSelectMenuInteraction, type RoleSelectMenuInteraction, type StringSelectMenuInteraction, type ChatInputCommandInteraction, type GuildMember, type Message,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, InteractionContextType, MessageFlags, ModalBuilder, SlashCommandBuilder, StringSelectMenuBuilder, TextInputBuilder, TextInputStyle,
+  type AutocompleteInteraction, type ButtonInteraction, type ChannelSelectMenuInteraction, type RoleSelectMenuInteraction, type StringSelectMenuInteraction, type ChatInputCommandInteraction, type GuildMember, type Message, type ModalSubmitInteraction,
 } from 'discord.js';
 import type { LavalinkManager, Player, RepeatMode } from 'lavalink-client';
-import { cardButtons, cardEmbed, clock, dropCard, idleBoard, refreshCard, setBoard, SLIME } from './card.js';
+import { cardButtons, cardEmbed, clock, dropCard, idleBoard, refreshCard, setBoard, skillsPanel, SLIME } from './card.js';
 import { config } from './config.js';
 import { ic, icon } from './icons.js';
 import { log } from './log.js';
@@ -60,7 +60,7 @@ export function queuePage(player: Player, page: number) {
   const loop = player.repeatMode === 'off' ? '' : ` · looping ${player.repeatMode}`;
   const embed = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: 'Queue' })
+    .setAuthor({ name: '《Great Sage》 Queue' })
     .setDescription(
       `**Now:** ${now ? cut(now.info.title, 80) : 'nothing'}\n\n${lines.join('\n') || 'The queue is empty. Add songs with play.'}`,
     )
@@ -232,8 +232,8 @@ const commands: Command[] = [
       const line = /^lyrics?:\s*(.+)$/i.exec(query)?.[1];
       if (line) {
         const song = await songFromLine(line);
-        if (!song) return c.reply('Great Sage: no song found with that line. Try a longer bit of it?');
-        return enqueue(c, lavalink, player, { tracks: [fromSong(song, requester)] }, `Great Sage: that line is from **${song.title}** by ${song.author}.`);
+        if (!song) return c.reply('《Great Sage》 no song found with that line. Try a longer bit of it?');
+        return enqueue(c, lavalink, player, { tracks: [fromSong(song, requester)] }, `《Great Sage》 that line is from **${song.title}** by ${song.author}.`);
       }
 
       const options = await searchAll(query, source, length);
@@ -246,7 +246,7 @@ const commands: Command[] = [
         .setCustomId(`tt:pick:${key}`)
         .setPlaceholder('Pick one to play')
         .addOptions(options.map((o, n) => ({ label: cut(o.label, 100), description: cut(o.detail, 100), value: String(n) })));
-      const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: 'Great Sage: search results' }).setDescription(`**${cut(query, 80)}** · ${options.length} found. Pick one below.`);
+      const e = new EmbedBuilder().setColor(SLIME).setAuthor({ name: '《Great Sage》 Search results' }).setDescription(`**${cut(query, 80)}** · ${options.length} found. Pick one below.`);
       return c.reply({ embeds: [e], components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu)] });
     },
   },
@@ -260,9 +260,9 @@ const commands: Command[] = [
       await c.wait(say('searching'));
       const requester: Requester = { id: c.user.id, name: c.user.username };
       const stations = await findStations(name, 8);
-      if (!stations.length) return c.reply(`Great Sage: no station called "${name}". Try a genre like lofi, jazz or news.`);
+      if (!stations.length) return c.reply(`《Great Sage》 no station called "${name}". Try a genre like lofi, jazz or news.`);
       const want = await workingStation(stations.map(stationWant), requester);
-      if (!want) return c.reply(`Great Sage: found ${stations.length} stations for "${name}" but none of them are on air right now.`);
+      if (!want) return c.reply(`《Great Sage》 found ${stations.length} stations for "${name}" but none of them are on air right now.`);
       return enqueue(c, lavalink, player, { tracks: [fromWant(want, requester)] });
     },
   },
@@ -475,7 +475,7 @@ const commands: Command[] = [
         name = name.replace(link, '').trim();
         await c.wait(say('searching'));
         const found = await find(link, requester).catch(() => null);
-        if (!found?.tracks.length) return c.reply('Great Sage: could not read that playlist.');
+        if (!found?.tracks.length) return c.reply('《Great Sage》 could not read that playlist.');
         const saved = savePlaylist(me, name || found.name || 'Imported', found.tracks.map(songOfTrack));
         return c.reply(`${say('predator', { n: saved.songs.length })} Saved as **${saved.name}** (code \`${saved.code}\`). Play it with \`${config.prefix} pl load ${saved.name}\`.`);
       }
@@ -598,7 +598,7 @@ const HELP: HelpPage[] = [
     cmds: [['play', 'p faded alan walker'], ['search', 'f when you\'re gone'], ['skip', 's'], ['stop', 'stop']],
     tips: [
       'Links from JioSaavn, YouTube, Spotify, Apple Music, Deezer, SoundCloud and Bandcamp all work, playlists too.',
-      'The player card has buttons for pause, skip, loop, volume, lyrics, filters and likes.',
+      'The player card has buttons for pause, skip, stop, loop, like, volume, lyrics and the queue. The wand opens your Skills: autoplay, shuffle, filters, equalizer and Predator (save the song to a playlist).',
       'Use the arrows below to flick through the pages, or `{p} help <command>` for one command.',
     ],
   },
@@ -681,7 +681,7 @@ function helpPage(n: number): Payload {
   }).filter(Boolean);
   const e = new EmbedBuilder()
     .setColor(SLIME)
-    .setAuthor({ name: 'Tempestune help' })
+    .setAuthor({ name: '《Great Sage》 Help' })
     .setTitle(`${ic(h.icon)} ${h.title}`.trim())
     .setDescription(fill([h.intro, '', ...lines, ...(h.tips?.length ? ['', ...h.tips.map((t) => `> ${t}`)] : [])].join('\n')).slice(0, 4000))
     .setFooter({ text: `Page ${page + 1} of ${HELP.length} · prefix: ${p()}` });
@@ -712,6 +712,17 @@ function commandHelp(cmd: Command): Payload {
     ].join('\n'))
     .setFooter({ text: page ? `Part of: ${page.title}` : 'Tempestune' });
   return { embeds: [e] };
+}
+
+export async function onPredator(i: ModalSubmitInteraction, lavalink: LavalinkManager) {
+  const player = lavalink.getPlayer(i.guildId!);
+  const name = i.fields.getTextInputValue('name').trim();
+  if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+  const song = songOfTrack(player.queue.current);
+  const r = addToPlaylist(i.user.id, name, song);
+  if (r === 'full') return i.reply({ content: 'That playlist is full (500 songs).', flags: MessageFlags.Ephemeral });
+  const list = r ?? savePlaylist(i.user.id, name, [song]);
+  return i.reply({ content: `《Predator》 **${player.queue.current.info.title}** went into **${list.name}** (${list.songs.length} songs).`, flags: MessageFlags.Ephemeral });
 }
 
 export async function onHelp(i: ButtonInteraction | StringSelectMenuInteraction) {
@@ -851,7 +862,26 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     if (problem) await i.editReply(problem);
     return;
   }
-  if (what === 'filters') {
+  if (what === 'skills') {
+    if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+    return i.reply({ ...skillsPanel(player), flags: MessageFlags.Ephemeral });
+  }
+  if (what === 'sk:eq') {
+    const live = !!player?.queue.current && (player.queue.current.requester as Requester | undefined)?.id === i.user.id;
+    return i.reply({ ...eqPanel(i.user.id, (i.member as GuildMember | null)?.displayName ?? i.user.username, live), flags: MessageFlags.Ephemeral });
+  }
+  if (what === 'sk:save') {
+    if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
+    // predator: swallow this song into one of your playlists
+    return i.showModal(
+      new ModalBuilder().setCustomId('tt:predator').setTitle('Predator: save this song').addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder().setCustomId('name').setLabel('Playlist name (new or existing)').setStyle(TextInputStyle.Short).setMaxLength(50).setRequired(true),
+        ),
+      ),
+    );
+  }
+  if (what === 'filters' || what === 'sk:filters') {
     if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });
     return i.reply({ ...filterPanel(player), flags: MessageFlags.Ephemeral });
   }
@@ -897,6 +927,17 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
   if (what === 'shuffle') {
     await player.queue.shuffle();
     return i.update(queuePage(player, 0));
+  }
+  if (what === 'sk:shuffle' || what === 'sk:auto') {
+    if (what === 'sk:shuffle') await player.queue.shuffle();
+    else {
+      player.set('autoplay', !player.get('autoplay'));
+      if (player.get('autoplay')) prepareAutoplay(player, { id: i.client.user.id, name: 'autoplay' }).catch(() => {});
+    }
+    await refreshCard(player);
+    const panel = skillsPanel(player);
+    if (what === 'sk:shuffle') panel.embeds[0].setFooter({ text: `Shuffled ${player.queue.tracks.length} songs.` });
+    return i.update(panel);
   }
   if (what === 'pause') player.paused ? await player.resume() : await player.pause();
   if (what === 'vdown') await player.setVolume(Math.max(0, player.volume - 10));
