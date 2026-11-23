@@ -815,10 +815,13 @@ export async function onMessage(m: Message, lavalink: LavalinkManager) {
   // prefix words become options in order, the last text one takes the rest of the line
   const values = new Map<string, string>();
   const specs = cmd.args ?? [];
-  specs.forEach((a, idx) => {
-    const v = a.rest || idx === specs.length - 1 && a.kind === 'text' ? rest.slice(idx).join(' ') : rest[idx];
+  // once one option takes the rest of the line, the ones after it stay empty
+  for (const [idx, a] of specs.entries()) {
+    const greedy = a.rest || (idx === specs.length - 1 && a.kind === 'text');
+    const v = greedy ? rest.slice(idx).join(' ') : rest[idx];
     if (v) values.set(a.name, v);
-  });
+    if (greedy) break;
+  }
 
   let sent: Message | null = null;
   const c: Ctx = {
