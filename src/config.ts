@@ -15,4 +15,7 @@ export const config = {
   // the relay serves cached tracks to lavalink on this port, only on this pc
   relayPort: Number(process.env.RELAY_PORT || 2340),
   cacheMb: Number(process.env.CACHE_MB || 2048),
+  // free api account from last.fm/api/account/create, scrobbling stays off without it
+  lastfmKey: process.env.LASTFM_KEY?.trim() || '',
+  lastfmSecret: process.env.LASTFM_SECRET?.trim() || '',
 };

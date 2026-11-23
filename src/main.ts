@@ -9,6 +9,7 @@ import { forgetQueue, keepOnDestroy, restoreAll, saveAll, saveQueue } from './ke
 import { noteHistory, songOfTrack } from './library.js';
 import { applyEq, normalise, stopLyrics } from './sound.js';
 import { notePlay, weeklyRecap } from './stats.js';
+import { fmTrackStart, watchScrobbles } from './lastfm.js';
 import { config } from './config.js';
 import { syncIcons } from './icons.js';
 import { log } from './log.js';
@@ -71,6 +72,7 @@ lavalink
     }
     if (track) notePlay(player.guildId, track, (track.requester as Requester | undefined)?.id ?? client.user!.id);
     applyEq(player).catch(() => {});
+    if (track) fmTrackStart(client, player, track);
     normalise(player).catch(() => {});
     showCard(client, player);
     showStatus(client, lavalink);
@@ -155,6 +157,7 @@ client.once('clientReady', async (c) => {
   log(`${c.user.tag} is up, youtube ${config.youtube ? 'on' : 'off'}`);
   showStatus(c, lavalink);
   weeklyRecap(c);
+  watchScrobbles(c, lavalink);
   // the node usually connects before discord is ready, so restore here as well
   setTimeout(() => restoreAll(lavalink, c.user.id), 4000);
 });
@@ -181,7 +184,7 @@ client.on('interactionCreate', async (i) => {
         return void (await i.reply({ ...queuePage(player, 0), flags: MessageFlags.Ephemeral }));
       }
       // old cards lose their buttons, queue pages can be flicked through anywhere
-      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id.startsWith('tt:eq:') || id.startsWith('tt:sk:') || id === 'tt:shuffle';
+      const anywhere = id.startsWith('tt:q:') || id.startsWith('tt:fx') || id.startsWith('tt:fav') || id.startsWith('tt:eq:') || id.startsWith('tt:sk:') || id.startsWith('tt:fm:') || id === 'tt:shuffle';
       if (!anywhere && !isCard(i.guildId, i.message.id)) return void (await i.update({ components: [] }));
       await onButton(i, lavalink);
     }

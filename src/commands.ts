@@ -12,6 +12,7 @@ import { addToPlaylist, deletePlaylist, favourites, favouritesEmbed, getPlaylist
 import { canControl, isDj, isManager, listeners, settingsOf, settingsPanel, updateSettings } from './settings.js';
 import { applyEq, applyPreset, changeEq, eqPanel, filterPanel, onFilterControl, PRESETS, setPitch, setSpeed, showLyrics, type Eq } from './sound.js';
 import { statsEmbed, type Period } from './stats.js';
+import { fmPanel, setScrobble, startLink, unlink } from './lastfm.js';
 import { find, fromSong, fromWant, pickNode, prepareAutoplay, searchAll, stationWant, workingStation, type Found, type Length, type Option, type Requester } from './music.js';
 import { say } from './sage.js';
 import { FEATURED, featured, featuredSongs } from './featured.js';
@@ -525,6 +526,12 @@ const commands: Command[] = [
     },
   },
   {
+    name: 'fm', aliases: ['lastfm', 'scrobble'], about: 'Connect your Last.fm so songs you hear here get scrobbled',
+    async run(c) {
+      return c.reply(fmPanel(c.user.id, c.member.displayName), true);
+    },
+  },
+  {
     name: 'stats', aliases: ['top', 'mostplayed'], about: 'Most played songs and top requesters in this server',
     args: [{ name: 'period', kind: 'text', about: 'How far back', choices: ['week', 'month', 'all'] }],
     async run(c) {
@@ -640,10 +647,11 @@ const HELP: HelpPage[] = [
   {
     title: 'Playlists and favourites', icon: 'like',
     intro: 'Keep the songs you love and play them back in one go.',
-    cmds: [['tensura', 'tensura shuffled'], ['anime', 'anime'], ['aot', 'aot'], ['jjk', 'jjk shuffled'], ['demonslayer', 'kny'], ['playlist', 'pl save road trip'], ['like', 'fav'], ['favourites', 'favs'], ['history', 'hist']],
+    cmds: [['fm', 'fm'], ['tensura', 'tensura shuffled'], ['anime', 'anime'], ['aot', 'aot'], ['jjk', 'jjk shuffled'], ['demonslayer', 'kny'], ['playlist', 'pl save road trip'], ['like', 'fav'], ['favourites', 'favs'], ['history', 'hist']],
     tips: [
       'Playlist actions: `list`, `save <name>`, `load <name or code>`, `show`, `add`, `delete`, `share`, `import <link>`.',
       'Share a playlist and anyone can load it with its 6 letter code.',
+      'Connect Last.fm once with `{p} fm` and every song you hear in voice with me gets scrobbled, like other music bots.',
       'The ready-made ones (`tensura`, `anime`, `aot`, `jjk`, `demonslayer`) also load with `{p} pl load <name>`.',
     ],
   },
@@ -864,6 +872,26 @@ export async function onButton(i: ButtonInteraction, lavalink: LavalinkManager) 
     const problem = await showLyrics(player, (p) => i.editReply(p).catch(() => null));
     if (problem) await i.editReply(problem);
     return;
+  }
+  if (what.startsWith('fm:')) {
+    const act = what.slice(3);
+    const name = (i.member as GuildMember | null)?.displayName ?? i.user.username;
+    const mine = i.message.flags.has(MessageFlags.Ephemeral);
+    const show = (p: ReturnType<typeof fmPanel>) => (mine ? i.update(p) : i.reply({ ...p, flags: MessageFlags.Ephemeral }));
+    if (act === 'connect') {
+      const url = await startLink(i.user.id, (who) => {
+        i.followUp({ content: who ? `《Great Sage》 Connected to Last.fm as **${who}**. Songs you hear with me will be scrobbled.` : '《Great Sage》 The Last.fm link timed out. Press Connect again when you are ready.', flags: MessageFlags.Ephemeral }).catch(() => {});
+      }).catch(() => null);
+      if (!url) return i.reply({ content: '《Great Sage》 Last.fm is not answering right now. Try again in a bit.', flags: MessageFlags.Ephemeral });
+      return i.reply({
+        content: 'Approve Tempestune on Last.fm, then come back here. I will notice by myself, the link works for 5 minutes.',
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setURL(url).setLabel('Approve on Last.fm'))],
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    if (act === 'on' || act === 'off') setScrobble(i.user.id, act === 'on');
+    if (act === 'unlink') unlink(i.user.id);
+    return show(fmPanel(i.user.id, name));
   }
   if (what === 'skills') {
     if (!player?.queue.current) return i.reply({ content: say('nothing'), flags: MessageFlags.Ephemeral });

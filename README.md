@@ -19,6 +19,7 @@ A Discord music bot with a calm slime in charge and a very thorough assistant in
 - Queue limits per person and per playlist, `stats` for the most played songs and a weekly recap card
 - Leaves the voice channel after 2 minutes with nobody in it
 - Shows what is playing as its status
+- Last.fm scrobbling: connect once with `fm`, then every song you hear in voice with the bot is scrobbled
 - The queue survives restarts of the bot, Lavalink or the whole PC
 - Daily database backups (the last 7 are kept in `backups/`), yt-dlp updates itself, and the owner gets a DM when Lavalink or YouTube keeps failing
 
