@@ -7,7 +7,7 @@ import { log } from './log.js';
 export const SLIME = 0x4fb8e0;
 
 const SOURCES: Record<string, string> = {
-  soundcloud: 'SoundCloud', bandcamp: 'Bandcamp', youtube: 'YouTube', spotify: 'Spotify', applemusic: 'Apple Music',
+  soundcloud: 'SoundCloud', bandcamp: 'Bandcamp', youtube: 'YouTube', jiosaavn: 'JioSaavn', spotify: 'Spotify', applemusic: 'Apple Music',
   deezer: 'Deezer', http: 'Web', jamendo: 'Jamendo', radio: 'Radio',
 };
 

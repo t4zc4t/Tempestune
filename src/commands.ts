@@ -213,7 +213,7 @@ const commands: Command[] = [
     name: 'search', aliases: ['find', 'f'], about: 'Search every source and pick the exact one',
     args: [
       { name: 'query', kind: 'text', about: 'What to look for (start with "lyrics:" to find a song by a line from it)', required: true, rest: true },
-      { name: 'source', kind: 'text', about: 'Only one source', choices: ['all', 'youtube', 'soundcloud', 'radio', 'jamendo'] },
+      { name: 'source', kind: 'text', about: 'Only one source', choices: ['all', 'jiosaavn', 'youtube', 'soundcloud', 'radio', 'jamendo'] },
       { name: 'length', kind: 'text', about: 'Song length', choices: ['any', 'short', 'normal', 'long'] },
     ],
     async run(c, lavalink, player) {
@@ -597,7 +597,7 @@ const HELP: HelpPage[] = [
     intro: 'Join a voice channel and ask for a song by name, a lyric, or a link. Every command works as a slash command or with the **`{p}`** prefix, and the short forms work too.',
     cmds: [['play', 'p faded alan walker'], ['search', 'f when you\'re gone'], ['skip', 's'], ['stop', 'stop']],
     tips: [
-      'Links from YouTube, Spotify, Apple Music, Deezer, SoundCloud and Bandcamp all work, playlists too.',
+      'Links from JioSaavn, YouTube, Spotify, Apple Music, Deezer, SoundCloud and Bandcamp all work, playlists too.',
       'The player card has buttons for pause, skip, loop, volume, lyrics, filters and likes.',
       'Use the arrows below to flick through the pages, or `{p} help <command>` for one command.',
     ],

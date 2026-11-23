@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { isApple, isDeezer, isSpotify, readDeezer, readSpotify, type SongInfo } from './links.js';
 import { log } from './log.js';
 import { notice } from './alerts.js';
+import { isSaavn, readSaavn, sameSong, searchSaavn } from './saavn.js';
 import { best, catalogue, guessSong, norm, offOriginal, type Canon } from './rank.js';
 import { findStations, searchJamendo, type Station } from './extras.js';
 import { listOf, relay, searchSoundCloud, searchYouTube, type RelayHit } from './relay.js';
@@ -18,6 +19,7 @@ export interface Want extends SongInfo {
   source: string;
   uri?: string;
   noYoutube?: boolean; // set after youtube already failed for this song
+  noSaavn?: boolean; // set after jiosaavn already failed for this song
   song?: { title: string; author: string; duration?: number }; // the real song, when we worked it out (for lyrics)
 }
 
@@ -51,9 +53,15 @@ const ytSearch = (q: string) =>
     return [] as RelayHit[];
   });
 
-// a known song (title, artist, length): its audio upload on youtube, soundcloud as the backup
-async function matchSong(canon: Canon, asked: string, noYoutube = false): Promise<Match | null> {
+// a known song (title, artist, length): jiosaavn, then youtube, soundcloud as the last backup
+async function matchSong(canon: Canon, asked: string, noYoutube = false, noSaavn = false): Promise<Match | null> {
   const q = `${canon.author} ${canon.title.replace(/\s*[([].*?[)\]]/g, '')}`.trim();
+  // jiosaavn first: the label's own upload, so it's the original
+  if (!noSaavn) {
+    const hits = await searchSaavn(`${canon.title.replace(/\s*[([].*?[)\]]/g, '')} ${canon.author}`, 10);
+    const hit = hits.find((h) => sameSong(h, canon) && !offOriginal(h, asked, canon));
+    if (hit) return { hit, source: 'jiosaavn', notOriginal: false, song: canon };
+  }
   let backup: Match | null = null;
   if (youtubeOn() && !noYoutube) {
     const hit = best(await ytSearch(`${q} audio`), asked, canon);
@@ -81,6 +89,8 @@ async function matchWords(text: string): Promise<Match | null> {
   // not a song we know (a mix, a podcast, something niche): best of what youtube and soundcloud say
   const hit = best(yt, text);
   if (hit) return { hit, source: 'youtube', notOriginal: false };
+  const sv = best(await searchSaavn(text, 10), text);
+  if (sv && norm(`${sv.title} ${sv.author}`).includes(norm(text).split(' ')[0] ?? '')) return { hit: sv, source: 'jiosaavn', notOriginal: false };
   const sc = best(await searchSoundCloud(text, 10).catch(() => []), text);
   return sc ? { hit: sc, source: 'soundcloud', notOriginal: false } : null;
 }
@@ -90,7 +100,7 @@ async function findAudio(want: Want, player: Player, requester: Requester): Prom
   if (want.how === 'direct' && want.uri) return loadOne(player.node, want.uri, requester);
   if (want.how !== 'find' && want.uri) return loadOne(player.node, await relay(want.uri), requester);
   // metadata only (spotify, apple, deezer) or a song whose own link failed: search by name
-  const m = await matchSong({ title: want.title, author: want.author, duration: want.duration }, `${want.author} ${want.title}`, want.noYoutube);
+  const m = await matchSong({ title: want.title, author: want.author, duration: want.duration }, `${want.author} ${want.title}`, want.noYoutube, want.noSaavn);
   if (!m) throw new Error(`no audio found for ${want.author} ${want.title}`);
   return loadOne(player.node, await relay(m.hit.url), requester);
 }
@@ -120,6 +130,11 @@ export function queued(want: Want, requester: Requester): UnresolvedTrack {
   // swaps this placeholder for the real track in place, so the queue keeps the same object
   t.resolve = async (player: Player) => {
     const real = await findAudio(want, player, requester).catch(async (e) => {
+      // jiosaavn refused it: look again everywhere else
+      if (want.source === 'jiosaavn' && !want.noSaavn) {
+        log(`jiosaavn failed for ${want.title}, looking elsewhere:`, e instanceof Error ? e.message.split('\n')[0] : e);
+        return findAudio({ ...want, how: 'find', noSaavn: true }, player, requester);
+      }
       // youtube refused it: same song from soundcloud instead
       if (want.noYoutube || (want.source !== 'youtube' && want.how !== 'find')) throw e;
       log(`youtube failed for ${want.title}, trying soundcloud:`, e instanceof Error ? e.message.split('\n')[0] : e);
@@ -175,6 +190,10 @@ export async function find(input: string, requester: Requester): Promise<Found> 
     const songs = (res.tracks ?? []).map((t) => ({ title: t.info.title, author: t.info.author, duration: t.info.duration, artwork: t.info.artworkUrl ?? undefined, link: t.info.uri ?? undefined }));
     return { tracks: fromSongs(songs, 'applemusic', requester), name: res.loadType === 'playlist' ? res.playlist?.name : undefined };
   }
+  if (isUrl && isSaavn(text)) {
+    const r = await readSaavn(text);
+    return { tracks: r.hits.map((h) => queued(fromHit(h, 'jiosaavn'), requester)), name: r.name };
+  }
   if (isUrl && /soundcloud\.com\/|bandcamp\.com\/|youtube\.com\/|youtu\.be\//i.test(text)) {
     const source = /bandcamp/i.test(text) ? 'bandcamp' : /soundcloud/i.test(text) ? 'soundcloud' : 'youtube';
     if (source === 'youtube' && !youtubeOn()) throw new Error('youtube is off');
@@ -212,7 +231,7 @@ export interface Option {
 }
 
 const mmss = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
-const SOURCE_NAME: Record<string, string> = { youtube: 'YouTube', soundcloud: 'SoundCloud', radio: 'Radio', jamendo: 'Jamendo' };
+const SOURCE_NAME: Record<string, string> = { youtube: 'YouTube', soundcloud: 'SoundCloud', radio: 'Radio', jamendo: 'Jamendo', jiosaavn: 'JioSaavn' };
 
 export type Length = 'any' | 'short' | 'normal' | 'long';
 const fitsLength = (ms: number, len: Length) =>
@@ -223,23 +242,27 @@ export const stationWant = (st: Station): Want => ({ title: st.name, author: [st
 // everything that matches, from every source that is on, for the search menu
 export async function searchAll(text: string, source = 'all', length: Length = 'any'): Promise<Option[]> {
   const want = (s: string) => source === 'all' || source === s;
-  const [yt, sc, radio, jam] = await Promise.all([
+  const [sv, yt, sc, radio, jam] = await Promise.all([
+    want('jiosaavn') ? searchSaavn(text, 10) : Promise.resolve([] as RelayHit[]),
     want('youtube') && youtubeOn() ? ytSearch(text) : Promise.resolve([] as RelayHit[]),
     want('soundcloud') ? searchSoundCloud(text, 10).catch(() => [] as RelayHit[]) : Promise.resolve([] as RelayHit[]),
     source === 'radio' ? findStations(text, 10) : Promise.resolve([] as Station[]),
     want('jamendo') ? searchJamendo(text, 5) : Promise.resolve([]),
   ]);
   const hits: Option[] = [
+    ...sv.map((h) => ({ h, s: 'jiosaavn' })),
     ...yt.map((h) => ({ h, s: 'youtube' })),
     ...sc.map((h) => ({ h, s: 'soundcloud' })),
   ]
     .filter((x) => fitsLength(x.h.duration, length))
     .map(({ h, s }) => ({ want: fromHit(h, s), label: h.title, detail: `${SOURCE_NAME[s]} · ${h.author} · ${mmss(h.duration)}` }));
-  // youtube and soundcloud take turns so both show up near the top
+  // the sources take turns so each shows up near the top: jiosaavn, youtube, youtube, soundcloud
   const mixed: Option[] = [];
+  const j = hits.filter((o) => o.want.source === 'jiosaavn');
   const a = hits.filter((o) => o.want.source === 'youtube');
   const b = hits.filter((o) => o.want.source === 'soundcloud');
-  while (a.length || b.length) {
+  while (j.length || a.length || b.length) {
+    if (j.length) mixed.push(j.shift()!);
     if (a.length) mixed.push(a.shift()!);
     if (a.length) mixed.push(a.shift()!);
     if (b.length) mixed.push(b.shift()!);

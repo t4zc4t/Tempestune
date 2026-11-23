@@ -128,8 +128,12 @@ async function slot<T>(job: () => Promise<T>): Promise<T> {
 const fetchTo = (url: string, key: string, retry: boolean) =>
   slot(() => run(
     [
-      // youtube: plain m4a audio, node solves its signature puzzle. soundcloud: its aac stream
-      ...(isYouTube(url) ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node', ...ytAuth()] : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
+      // youtube: plain m4a audio, node solves its signature puzzle. jiosaavn: its 320k m4a. soundcloud: its aac stream
+      ...(isYouTube(url)
+        ? ['-f', 'ba[ext=m4a]/ba', '--js-runtimes', 'node', ...ytAuth()]
+        : /jiosaavn\.com\//i.test(url)
+          ? ['-f', '320/128/bestaudio']
+          : ['-f', 'hls_aac_160k/hls_aac_96k/mp3-128/bestaudio']),
       ...(retry ? ['--extractor-args', 'youtube:player_client=tv,web_safari'] : []),
       '--ffmpeg-location', ffmpeg,
       '--no-playlist', '--no-progress', '--no-warnings', '--no-part',

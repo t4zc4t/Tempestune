@@ -4,9 +4,10 @@ A Discord music bot with a calm slime in charge and a very thorough assistant in
 
 ## What it does
 
-- Plays songs from a name or a link: YouTube, SoundCloud, Bandcamp, Spotify, Apple Music, Deezer, Jamendo and internet radio
+- Plays songs from a name or a link: JioSaavn, YouTube, SoundCloud, Bandcamp, Spotify, Apple Music, Deezer, Jamendo and internet radio
+- Known songs come from JioSaavn first (the label's own 320k upload), then YouTube, with SoundCloud as the last resort
 - Works out which song you meant before searching, so you get the original and not a remix, sped up or lyric edit (unless you ask for one)
-- Spotify, Apple Music and Deezer links are only read for the song names, the audio is found on YouTube or SoundCloud
+- Spotify, Apple Music and Deezer links are only read for the song names, the audio is found on JioSaavn, YouTube or SoundCloud
 - Search menu across every source, with source and length filters, suggestions while typing, "did you mean" and search by a line from the lyrics
 - Queue with pages, move, remove, shuffle, loop, seek and skip to
 - Autoplay of related songs when the queue runs out, ready before the last song ends, with no repeats within the hour
