@@ -65,11 +65,11 @@ export function cardEmbed(player: Player) {
   return e;
 }
 
-// icon-only buttons; until the icons are uploaded they fall back to a short label
+// icon plus one short word, so it's clear what each button does
 const button = (id: string, emoji: string, label: string, style = ButtonStyle.Secondary, off = false) => {
-  const btn = new ButtonBuilder().setCustomId(`tt:${id}`).setStyle(style).setDisabled(off);
+  const btn = new ButtonBuilder().setCustomId(`tt:${id}`).setStyle(style).setDisabled(off).setLabel(label);
   const e = icon(emoji);
-  return e ? btn.setEmoji(e) : btn.setLabel(label);
+  return e ? btn.setEmoji(e) : btn;
 };
 
 export function cardButtons(player: Player, off = false) {
@@ -83,8 +83,8 @@ export function cardButtons(player: Player, off = false) {
       button('like', 'like', 'Like', ButtonStyle.Secondary, off),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
-      button('vdown', 'voldown', 'Vol -', ButtonStyle.Secondary, off),
-      button('vup', 'volup', 'Vol +', ButtonStyle.Secondary, off),
+      button('vdown', 'voldown', 'Vol', ButtonStyle.Secondary, off),
+      button('vup', 'volup', 'Vol', ButtonStyle.Secondary, off),
       button('lyrics', 'lyrics', 'Lyrics', ButtonStyle.Secondary, off),
       button('queue', 'queue', 'Queue', ButtonStyle.Secondary, off),
       button('skills', 'skills', 'Skills', ButtonStyle.Secondary, off),
