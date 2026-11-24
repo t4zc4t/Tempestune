@@ -106,9 +106,9 @@ lavalink
         return null;
       }));
       if (next) {
-        await player.queue.add(next);
-        await player.play().catch((e: unknown) => log('autoplay play failed', e));
-        return;
+        await player.queue.add(next as any);
+        const played = await player.play().then(() => true, (e: unknown) => (log('autoplay play failed', e instanceof Error ? e.message : e), false));
+        if (played) return;
       }
     }
     await dropCard(player.guildId);

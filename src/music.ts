@@ -5,7 +5,7 @@ import { log } from './log.js';
 import { notice } from './alerts.js';
 import { isSaavn, readSaavn, sameSong, searchSaavn } from './saavn.js';
 import { best, catalogue, guessSong, norm, offOriginal, type Canon } from './rank.js';
-import { findStations, searchJamendo, type Station } from './extras.js';
+import { findStations, searchJamendo, splitTitle, type Station } from './extras.js';
 import { listOf, relay, searchSoundCloud, searchYouTube, type RelayHit } from './relay.js';
 
 export interface Requester {
@@ -284,27 +284,55 @@ export const fromWant = (want: Want, requester: Requester) => queued({ ...want }
 
 const ytId = (url?: string) => (url ? /(?:v=|youtu\.be\/)([\w-]{11})/.exec(url)?.[1] : undefined);
 
-export async function related(player: Player, requester: Requester, seed?: Track): Promise<UnresolvedTrack | null> {
-  const last = (seed ?? player.queue.previous[0] ?? player.queue.current) as Track | undefined;
-  if (!last || !youtubeOn()) return null;
+// autoplay ideas: last.fm's similar songs first (clean names, no youtube needed), youtube's mix as the backup.
+// every idea is a plain name, so it gets found the usual way: jiosaavn, then youtube, then soundcloud
+const JUNK = /\b(dance|choreo\w*|animatic|reaction|tutorial|cover|karaoke|shorts|trailer|teaser|making of|behind the scenes|amv|edit)\b/i;
+
+async function similarOnLastfm(title: string, author: string): Promise<Canon[]> {
+  if (!config.lastfmKey) return [];
+  const q = new URLSearchParams({ method: 'track.getsimilar', artist: author, track: title, autocorrect: '1', limit: '30', api_key: config.lastfmKey, format: 'json' });
+  const j = (await fetch(`https://ws.audioscrobbler.com/2.0/?${q}`, { signal: AbortSignal.timeout(7000) }).then((r) => r.json()).catch(() => null)) as any;
+  return (j?.similartracks?.track ?? []).map((t: any) => ({ title: String(t.name), author: String(t.artist?.name ?? ''), duration: Number(t.duration || 0) * 1000 || undefined }));
+}
+
+async function similarOnYouTube(last: Track): Promise<Canon[]> {
+  if (!youtubeOn()) return [];
   const want = last.userData?.want as unknown as Want | undefined;
-  let id = ytId(want?.uri) ?? ytId(last.info.uri);
-  if (!id) {
-    const m = await matchSong({ title: want?.title ?? last.info.title, author: want?.author ?? last.info.author, duration: last.info.duration }, `${last.info.author} ${last.info.title}`);
-    id = ytId(m?.hit.url);
-  }
-  if (!id) return null;
-  // youtube's own mix for that song: a list of related tracks
+  const id = ytId(want?.uri) ?? ytId(last.info.uri);
+  if (!id) return [];
   const mix = await listOf(`https://www.youtube.com/watch?v=${id}&list=RD${id}`).catch(() => null);
+  return (mix?.hits ?? [])
+    .filter((h) => h.duration > 90_000 && h.duration < 8 * 60_000 && !offOriginal(h, '', undefined))
+    .map((h) => ({ ...splitTitle(h.title, h.author), duration: h.duration }));
+}
+
+const nameOf = (t: Track) => {
+  const want = t.userData?.want as unknown as (Want & { song?: Canon }) | undefined;
+  if (want?.song) return want.song;
+  if (want?.how === 'find') return { title: want.title, author: want.author };
+  return splitTitle(t.info.title, t.info.author ?? '');
+};
+
+export async function related(player: Player, requester: Requester, seed?: Track): Promise<Track | null> {
+  const last = (seed ?? player.queue.previous[0] ?? player.queue.current) as Track | undefined;
+  if (!last) return null;
+  const { title, author } = nameOf(last);
   const seen = new Set<string>([...((player.get('played') as string[] | undefined) ?? []), ...recentlyPlayed(player.guildId)]);
-  const good = (mix?.hits ?? []).filter((h) => {
-    const key = norm(h.title).slice(0, 40);
-    return !seen.has(key) && h.duration > 90_000 && h.duration < 8 * 60_000 && !offOriginal(h, '', undefined);
-  });
-  // a bit of variety: one of the first few good ones, not always the top of the mix
-  const pick = good[Math.floor(Math.random() * Math.min(4, good.length))];
-  if (!pick) return null;
-  return queued({ ...fromHit(pick, 'youtube'), source: 'youtube' }, requester);
+  const fresh = (c: Canon) => c.title && !seen.has(norm(c.title).slice(0, 40)) && !JUNK.test(c.title) && norm(c.title) !== norm(title);
+  let ideas = (await similarOnLastfm(title, author)).filter(fresh);
+  if (ideas.length < 3) ideas = [...ideas, ...(await similarOnYouTube(last)).filter(fresh)];
+  // still nothing (niche song and youtube blocked): more songs by the same artist from jiosaavn
+  if (ideas.length < 3) ideas = [...ideas, ...(await searchSaavn(author.split(/,| & /)[0], 20)).map((h) => ({ title: h.title, author: h.author, duration: h.duration })).filter(fresh)];
+  // a bit of variety: shuffle the first few, then try them in turn until one actually plays
+  const top = ideas.slice(0, 6).sort(() => Math.random() - 0.5);
+  for (const idea of [...top, ...ideas.slice(6, 10)].slice(0, 5)) {
+    const t = queued({ title: idea.title, author: idea.author, duration: idea.duration, how: 'find', source: 'search' }, requester);
+    const ok = await t.resolve(player).then(() => true, () => false);
+    if (ok) return t as unknown as Track;
+    seen.add(norm(idea.title).slice(0, 40));
+  }
+  log(`autoplay found nothing after ${title}`);
+  return null;
 }
 
 // everything played in a server over the last hour, kept across stops and restarts of the player
@@ -347,9 +375,7 @@ export async function prepareAutoplay(player: Player, requester: Requester) {
   const byBot = (current.requester as Requester | undefined)?.id === requester.id;
   const from = byBot && seeds.length ? seeds[Math.floor(Math.random() * seeds.length)] : current;
   const next = await related(player, requester, from).catch(() => null);
-  if (!next || player.get('autoSeed') !== seed) return;
-  const ok = await next.resolve(player).then(() => true, () => false);
-  if (ok && player.get('autoSeed') === seed) player.set('autoNext', next);
+  if (next && player.get('autoSeed') === seed) player.set('autoNext', next);
 }
 
 // takes the prepared song if it is still for the song that just ended
